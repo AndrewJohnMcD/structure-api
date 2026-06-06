@@ -1,0 +1,13 @@
+name = "structure-api"
+main = "src/index.ts"
+compatibility_date = "2025-06-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Secrets are set via `wrangler secret put <KEY>`
+# STRIPE_SECRET_KEY
+# STRIPE_PRICE_ID
+# STRIPE_COUPON_ID
+# ALLOWED_ORIGINS
+
+[observability]
+enabled = true

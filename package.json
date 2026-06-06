@@ -1,0 +1,21 @@
+{
+  "name": "structure-api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The Structure - Backend API (Cloudflare Workers)",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "hono": "^4.7.0",
+    "stripe": "^17.0.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250601.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.0.0",
+    "wrangler": "^3.114.17"
+  }
+}
