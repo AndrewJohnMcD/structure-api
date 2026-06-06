@@ -4,6 +4,8 @@ import { corsMiddleware } from './middleware';
 import { checkout } from './routes/checkout';
 import { billing } from './routes/billing';
 import { enterprise } from './routes/enterprise';
+import { referral } from './routes/referral';
+import { affiliate } from './routes/affiliate';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -15,6 +17,7 @@ app.get('/api/health', (c) => {
   return c.json({
     status: 'operational',
     service: 'structure-api',
+    version: '0.2.0',
     timestamp: new Date().toISOString(),
   });
 });
@@ -23,6 +26,8 @@ app.get('/api/health', (c) => {
 app.route('/api/checkout', checkout);
 app.route('/api/billing-portal', billing);
 app.route('/api/enterprise', enterprise);
+app.route('/api/referral', referral);
+app.route('/api/affiliate', affiliate);
 
 // 404 fallback
 app.notFound((c) => {
