@@ -9,7 +9,7 @@ compatibility_flags = ["nodejs_compat"]
 # STRIPE_COUPON_ID
 # FIRSTPROMOTER_API_KEY
 # DO_API_TOKEN
-# ADMIN_SECRET
+# CLERK_JWKS_URL
 # ALLOWED_ORIGINS
 
 [observability]

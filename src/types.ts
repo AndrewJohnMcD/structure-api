@@ -4,6 +4,6 @@ export interface Env {
   STRIPE_COUPON_ID: string;
   FIRSTPROMOTER_API_KEY: string;
   DO_API_TOKEN: string;
-  ADMIN_SECRET: string;
+  CLERK_JWKS_URL: string;
   ALLOWED_ORIGINS: string;
 }
