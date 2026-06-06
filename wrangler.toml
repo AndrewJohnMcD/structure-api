@@ -8,6 +8,8 @@ compatibility_flags = ["nodejs_compat"]
 # STRIPE_PRICE_ID
 # STRIPE_COUPON_ID
 # FIRSTPROMOTER_API_KEY
+# DO_API_TOKEN
+# ADMIN_SECRET
 # ALLOWED_ORIGINS
 
 [observability]

@@ -6,6 +6,7 @@ import { billing } from './routes/billing';
 import { enterprise } from './routes/enterprise';
 import { referral } from './routes/referral';
 import { affiliate } from './routes/affiliate';
+import { tenants } from './routes/tenants';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -27,6 +28,7 @@ app.route('/api/billing-portal', billing);
 app.route('/api/enterprise', enterprise);
 app.route('/api/referral', referral);
 app.route('/api/affiliate', affiliate);
+app.route('/api/tenants', tenants);
 
 // 404 fallback
 app.notFound((c) => {
