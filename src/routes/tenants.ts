@@ -25,6 +25,15 @@ const REGIONS: Record<string, string> = {
   'Richmond, USA': 'ric1',
 };
 
+// Reverse lookup: DO slug -> friendly name
+const SLUG_TO_NAME: Record<string, string> = Object.fromEntries(
+  Object.entries(REGIONS).map(([name, slug]) => [slug, name])
+);
+
+// Set of valid slugs for direct validation
+const VALID_SLUGS = new Set(Object.values(REGIONS));
+
+
 /**
  * Helper: make authenticated requests to DigitalOcean API
  */
@@ -76,14 +85,25 @@ tenants.post('/', async (c) => {
     return c.json({ error: 'Missing required fields: name, region' }, 400);
   }
 
-  // Resolve region slug
-  const regionSlug = REGIONS[body.region];
-  if (!regionSlug) {
-    return c.json({
-      error: `Invalid region: ${body.region}`,
-      validRegions: Object.keys(REGIONS),
-    }, 400);
-  }
+// Resolve region: accept both DO slugs (syd1) and friendly names (Sydney, Australia)
+let regionSlug: string;
+let regionName: string;
+
+if (VALID_SLUGS.has(body.region)) {
+  // Frontend sent a slug directly (e.g. 'syd1')
+  regionSlug = body.region;
+  regionName = SLUG_TO_NAME[body.region] || body.region;
+} else if (REGIONS[body.region]) {
+  // Frontend sent a friendly name (e.g. 'Sydney, Australia')
+  regionSlug = REGIONS[body.region];
+  regionName = body.region;
+} else {
+  return c.json({
+    error: `Invalid region: ${body.region}`,
+    validRegions: Object.keys(REGIONS),
+    validSlugs: Object.values(REGIONS),
+  }, 400);
+}
 
   try {
     const res = await doFetch(c.env.DO_API_TOKEN, '/droplets', 'POST', {
@@ -107,7 +127,7 @@ tenants.post('/', async (c) => {
       droplet: {
         id: data.droplet.id,
         name: data.droplet.name,
-        region: body.region,
+        region: regionName,
         regionSlug,
         status: data.droplet.status,
         createdAt: data.droplet.created_at,
