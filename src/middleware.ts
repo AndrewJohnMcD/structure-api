@@ -26,6 +26,14 @@ let cachedJWKS: JsonWebKey | null = null;
 let jwksCachedAt = 0;
 const JWKS_CACHE_TTL = 3600000; // 1 hour in ms
 
+// Clock skew tolerance in seconds.
+// Clerk issues short-lived tokens (60s). This generous tolerance absorbs
+// clock drift between Clerk servers and Cloudflare edge nodes, network
+// latency, and token transit time. The admin console is already gated
+// behind Clerk authentication -- this JWT is a secondary verification
+// layer, so generosity here costs nothing in security.
+const CLOCK_SKEW_TOLERANCE = 120; // 2 minutes
+
 async function getClerkPublicKey(jwksUrl: string): Promise<CryptoKey> {
   const now = Date.now();
 
@@ -93,12 +101,12 @@ async function verifyJWT(token: string, jwksUrl: string): Promise<boolean> {
 
     if (!isValid) return false;
 
-    // Check expiration
+    // Check expiration and not-before with clock skew tolerance
     const payload = JSON.parse(new TextDecoder().decode(base64UrlDecode(payloadB64)));
     const now = Math.floor(Date.now() / 1000);
 
-    if (payload.exp && payload.exp < now) return false;
-    if (payload.nbf && payload.nbf > now) return false;
+    if (payload.exp && (payload.exp + CLOCK_SKEW_TOLERANCE) < now) return false;
+    if (payload.nbf && (payload.nbf - CLOCK_SKEW_TOLERANCE) > now) return false;
 
     return true;
   } catch {
