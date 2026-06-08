@@ -8,19 +8,32 @@ const checkout = new Hono<{ Bindings: Env }>();
  * POST /api/checkout
  * Creates a Stripe Checkout Session for the Standard Plan.
  * If a valid referral code is provided, applies the 40% partner coupon.
+ * Region is optional -- customers select their region post-purchase.
  */
 checkout.post('/', async (c) => {
   const stripe = new Stripe(c.env.STRIPE_SECRET_KEY);
 
   const body = await c.req.json<{
     referralCode?: string;
-    region: string;
+    referral_code?: string;
+    region?: string;
     successUrl: string;
     cancelUrl: string;
   }>();
 
-  if (!body.region || !body.successUrl || !body.cancelUrl) {
-    return c.json({ error: 'Missing required fields: region, successUrl, cancelUrl' }, 400);
+  if (!body.successUrl || !body.cancelUrl) {
+    return c.json({ error: 'Missing required fields: successUrl, cancelUrl' }, 400);
+  }
+
+  // Accept both camelCase and snake_case for referral code
+  const referralCode = body.referralCode || body.referral_code;
+
+  const metadata: Record<string, string> = {};
+  if (body.region) {
+    metadata.region = body.region;
+  }
+  if (referralCode) {
+    metadata.referralCode = referralCode;
   }
 
   const sessionParams: Stripe.Checkout.SessionCreateParams = {
@@ -34,26 +47,19 @@ checkout.post('/', async (c) => {
     ],
     success_url: body.successUrl,
     cancel_url: body.cancelUrl,
-    metadata: {
-      region: body.region,
-    },
+    metadata,
     subscription_data: {
-      metadata: {
-        region: body.region,
-      },
+      metadata,
     },
   };
 
   // Apply partner coupon if referral code is provided
-  if (body.referralCode && body.referralCode.trim().length > 0) {
+  if (referralCode && referralCode.trim().length > 0) {
     sessionParams.discounts = [
       {
         coupon: c.env.STRIPE_COUPON_ID,
       },
     ];
-    if (sessionParams.metadata) {
-      sessionParams.metadata.referralCode = body.referralCode;
-    }
   }
 
   try {
