@@ -3,6 +3,9 @@ main = "src/index.ts"
 compatibility_date = "2025-06-01"
 compatibility_flags = ["nodejs_compat"]
 
+# Custom domain — ensures `wrangler deploy` preserves the binding
+routes = [{ pattern = "api.optimisingperformance.com.au", custom_domain = true }]
+
 # Secrets are set via `wrangler secret put <KEY>`
 # STRIPE_SECRET_KEY
 # STRIPE_PRICE_ID
