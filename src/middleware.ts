@@ -8,6 +8,8 @@ export const corsMiddleware = async (c: Context<{ Bindings: Env }>, next: Next) 
 
   if (allowedOrigins.includes(origin)) {
     c.header('Access-Control-Allow-Origin', origin);
+  } else if (origin) {
+    console.warn(`CORS: rejected origin "${origin}". Allowed: ${allowedOrigins.join(', ')}`);
   }
 
   c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
@@ -15,7 +17,11 @@ export const corsMiddleware = async (c: Context<{ Bindings: Env }>, next: Next) 
   c.header('Access-Control-Max-Age', '86400');
 
   if (c.req.method === 'OPTIONS') {
-    return new Response(null, { status: 204 });
+    // CRITICAL: Use c.body() instead of raw new Response() so that
+    // all headers set via c.header() are preserved in the response.
+    // A raw `new Response(null, ...)` bypasses Hono's context and
+    // returns zero headers, causing CORS preflight failures.
+    return c.body(null, 204);
   }
 
   await next();
