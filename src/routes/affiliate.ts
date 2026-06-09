@@ -4,12 +4,13 @@ import { Env } from '../types';
 const affiliate = new Hono<{ Bindings: Env }>();
 
 // Helper: fetch promoter by email from FirstPromoter
-async function getPromoterByEmail(email: string, apiKey: string) {
+async function getPromoterByEmail(email: string, apiKey: string, accountId: string) {
   const res = await fetch(
     `https://firstpromoter.com/api/v1/promoters/list?email=${encodeURIComponent(email)}`,
     {
       headers: {
         'x-api-key': apiKey,
+        'x-account-id': accountId,
         'Content-Type': 'application/json',
       },
     }
@@ -40,7 +41,7 @@ affiliate.get('/stats', async (c) => {
   }
 
   try {
-    const promoter = await getPromoterByEmail(email, c.env.FIRSTPROMOTER_API_KEY);
+    const promoter = await getPromoterByEmail(email, c.env.FIRSTPROMOTER_API_KEY, c.env.FIRSTPROMOTER_ACCOUNT_ID);
 
     if (!promoter) {
       return c.json({ error: 'No affiliate account found for this email' }, 404);
@@ -83,7 +84,7 @@ affiliate.get('/referrals', async (c) => {
   }
 
   try {
-    const promoter = await getPromoterByEmail(email, c.env.FIRSTPROMOTER_API_KEY);
+    const promoter = await getPromoterByEmail(email, c.env.FIRSTPROMOTER_API_KEY, c.env.FIRSTPROMOTER_ACCOUNT_ID);
 
     if (!promoter) {
       return c.json({ error: 'No affiliate account found for this email' }, 404);
@@ -97,6 +98,7 @@ affiliate.get('/referrals', async (c) => {
       {
         headers: {
           'x-api-key': c.env.FIRSTPROMOTER_API_KEY,
+          'x-account-id': c.env.FIRSTPROMOTER_ACCOUNT_ID,
           'Content-Type': 'application/json',
         },
       }
@@ -139,7 +141,7 @@ affiliate.get('/earnings', async (c) => {
   }
 
   try {
-    const promoter = await getPromoterByEmail(email, c.env.FIRSTPROMOTER_API_KEY);
+    const promoter = await getPromoterByEmail(email, c.env.FIRSTPROMOTER_API_KEY, c.env.FIRSTPROMOTER_ACCOUNT_ID);
 
     if (!promoter) {
       return c.json({ error: 'No affiliate account found for this email' }, 404);
@@ -154,6 +156,7 @@ affiliate.get('/earnings', async (c) => {
       {
         headers: {
           'x-api-key': c.env.FIRSTPROMOTER_API_KEY,
+          'x-account-id': c.env.FIRSTPROMOTER_ACCOUNT_ID,
           'Content-Type': 'application/json',
         },
       }
