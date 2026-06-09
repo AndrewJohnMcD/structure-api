@@ -31,7 +31,12 @@ async function getPromoterByEmail(email: string, apiKey: string, accountId: stri
 
 /**
  * GET /api/affiliate/stats?email=...
- * Returns promoter overview: ref_id, state, referral_link, stats, tier info.
+ * Returns promoter overview: ref_id, status, referral_link, stats, tier info.
+ *
+ * FirstPromoter v1 API field mapping (documented in PR #12):
+ *   - default_ref_id  (NOT ref_id)
+ *   - status          (NOT state)
+ *   - default_ref_link (referral URL)
  */
 affiliate.get('/stats', async (c) => {
   const email = c.req.query('email');
@@ -49,11 +54,22 @@ affiliate.get('/stats', async (c) => {
 
     const p = promoter as Record<string, unknown>;
 
+    // Diagnostic: log raw promoter fields for debugging field name mismatches
+    console.log('Raw promoter object keys:', Object.keys(p));
+    console.log('Promoter identity fields:', {
+      id: p.id,
+      default_ref_id: p.default_ref_id,
+      status: p.status,
+      default_ref_link: p.default_ref_link,
+    });
+
+    const refId = p.default_ref_id as string | undefined;
+
     return c.json({
       id: p.id,
-      ref_id: p.ref_id,
-      state: p.state,
-      referral_link: p.default_ref_link || `https://quantum.optimisingperformance.com.au?ref=${p.ref_id}`,
+      ref_id: refId || '',
+      state: (p.status as string) || 'unknown',
+      referral_link: (p.default_ref_link as string) || (refId ? `https://quantum.optimisingperformance.com.au?ref=${refId}` : ''),
       stats: {
         referrals_count: p.customers_count || 0,
         active_referrals: p.active_customers_count || 0,
