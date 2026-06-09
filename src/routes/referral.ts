@@ -24,6 +24,7 @@ referral.post('/validate', async (c) => {
       {
         headers: {
           'x-api-key': c.env.FIRSTPROMOTER_API_KEY,
+          'x-account-id': c.env.FIRSTPROMOTER_ACCOUNT_ID,
           'Content-Type': 'application/json',
         },
       }
