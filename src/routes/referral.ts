@@ -4,13 +4,13 @@ import { Env } from '../types';
 const referral = new Hono<{ Bindings: Env }>();
 
 /**
- * Valid promoter states that should be treated as eligible for referral codes.
- * FirstPromoter uses different state strings depending on approval workflow:
+ * Valid promoter statuses that should be treated as eligible for referral codes.
+ * FirstPromoter v1 API uses the "status" field (not "state") with values:
  * - 'active': fully active promoter
- * - 'accepted': promoter accepted into campaign (default for new signups)
- * - 'approved': alternative approval state
+ * - 'approved': promoter approved into campaign
+ * - 'accepted': alternative approval status
  */
-const VALID_PROMOTER_STATES = new Set(['active', 'accepted', 'approved']);
+const VALID_PROMOTER_STATUSES = new Set(['active', 'accepted', 'approved']);
 
 /**
  * POST /api/referral/validate
@@ -44,30 +44,39 @@ referral.post('/validate', async (c) => {
       return c.json({ valid: false, error: 'Unable to validate code' }, 502);
     }
 
-    const promoters = await fpRes.json() as Array<{ id: number; ref_id: string; state: string }>;
+    // FirstPromoter v1 API returns: default_ref_id (top-level) and status (not state)
+    const promoters = await fpRes.json() as Array<{
+      id: number;
+      default_ref_id: string;
+      status: string;
+    }>;
 
     // Log raw response for diagnostic visibility
     console.log('FirstPromoter lookup:', JSON.stringify({
       code,
       results: promoters.length,
-      promoters: promoters.map((p) => ({ id: p.id, ref_id: p.ref_id, state: p.state })),
+      promoters: promoters.map((p) => ({
+        id: p.id,
+        default_ref_id: p.default_ref_id,
+        status: p.status,
+      })),
     }));
 
-    // Find a promoter matching the code with a valid state
+    // Find a promoter matching the code with a valid status
     const match = promoters.find(
-      (p) => p.ref_id === code && VALID_PROMOTER_STATES.has(p.state)
+      (p) => p.default_ref_id === code && VALID_PROMOTER_STATUSES.has(p.status)
     );
 
     if (match) {
-      return c.json({ valid: true, ref_id: match.ref_id });
+      return c.json({ valid: true, ref_id: match.default_ref_id });
     }
 
-    // If promoters were found but none matched state requirements, log the mismatch
-    const codeMatch = promoters.find((p) => p.ref_id === code);
+    // If promoters were found but none matched status requirements, log the mismatch
+    const codeMatch = promoters.find((p) => p.default_ref_id === code);
     if (codeMatch) {
       console.warn(
-        `Referral code "${code}" found but promoter state "${codeMatch.state}" is not in valid set:`,
-        Array.from(VALID_PROMOTER_STATES)
+        `Referral code "${code}" found but promoter status "${codeMatch.status}" is not in valid set:`,
+        Array.from(VALID_PROMOTER_STATUSES)
       );
     }
 
