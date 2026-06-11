@@ -2,6 +2,7 @@ export interface Env {
   STRIPE_SECRET_KEY: string;
   STRIPE_PRICE_ID: string;
   STRIPE_COUPON_ID: string;
+  STRIPE_WEBHOOK_SECRET: string;
   FIRSTPROMOTER_API_KEY: string;
   FIRSTPROMOTER_ACCOUNT_ID: string;
   RESEND_API_KEY: string;
