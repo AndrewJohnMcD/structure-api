@@ -4,6 +4,7 @@ import { corsMiddleware } from './middleware';
 import { checkout } from './routes/checkout';
 import { billing } from './routes/billing';
 import { enterprise } from './routes/enterprise';
+import { contact } from './routes/contact';
 import { referral } from './routes/referral';
 import { affiliate } from './routes/affiliate';
 import { tenants } from './routes/tenants';
@@ -27,6 +28,7 @@ app.get('/api/health', (c) => {
 app.route('/api/checkout', checkout);
 app.route('/api/billing-portal', billing);
 app.route('/api/enterprise', enterprise);
+app.route('/api/contact', contact);
 app.route('/api/referral', referral);
 app.route('/api/affiliate', affiliate);
 app.route('/api/tenants', tenants);
