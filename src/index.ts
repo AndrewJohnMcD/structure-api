@@ -9,10 +9,18 @@ import { referral } from './routes/referral';
 import { affiliate } from './routes/affiliate';
 import { tenants } from './routes/tenants';
 import { support } from './routes/support';
+import { webhooks } from './routes/webhooks';
 
 const app = new Hono<{ Bindings: Env }>();
 
-// Apply CORS to all routes
+// Mount webhook route BEFORE CORS middleware.
+// Stripe sends server-to-server requests with no Origin header.
+// While our CORS middleware won't block originless requests,
+// mounting webhooks first ensures zero middleware interference
+// with signature verification and raw body parsing.
+app.route('/api/webhooks/stripe', webhooks);
+
+// Apply CORS to all remaining routes
 app.use('*', corsMiddleware);
 
 // Health check

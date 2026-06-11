@@ -10,6 +10,7 @@ routes = [{ pattern = "api.optimisingperformance.com.au", custom_domain = true }
 # STRIPE_SECRET_KEY
 # STRIPE_PRICE_ID
 # STRIPE_COUPON_ID
+# STRIPE_WEBHOOK_SECRET
 # FIRSTPROMOTER_API_KEY
 # FIRSTPROMOTER_ACCOUNT_ID
 # RESEND_API_KEY
