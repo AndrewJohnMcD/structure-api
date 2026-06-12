@@ -8,5 +8,6 @@ export interface Env {
   RESEND_API_KEY: string;
   DO_API_TOKEN: string;
   CLERK_JWKS_URL: string;
+  CLERK_CUSTOMER_JWKS_URL: string;
   ALLOWED_ORIGINS: string;
 }

@@ -10,6 +10,7 @@ import { affiliate } from './routes/affiliate';
 import { tenants } from './routes/tenants';
 import { support } from './routes/support';
 import { webhooks } from './routes/webhooks';
+import { customer } from './routes/customer';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -41,6 +42,7 @@ app.route('/api/referral', referral);
 app.route('/api/affiliate', affiliate);
 app.route('/api/tenants', tenants);
 app.route('/api/support', support);
+app.route('/api/customer', customer);
 
 // 404 fallback
 app.notFound((c) => {
