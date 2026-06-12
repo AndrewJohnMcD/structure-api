@@ -41,7 +41,7 @@ webhooks.post('/', async (c) => {
 
   let event: Stripe.Event;
   try {
-    event = stripe.webhooks.constructEvent(
+    event = await stripe.webhooks.constructEventAsync(
       rawBody,
       signature,
       c.env.STRIPE_WEBHOOK_SECRET
