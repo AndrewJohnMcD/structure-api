@@ -17,33 +17,34 @@ export const corsMiddleware = async (c: Context<{ Bindings: Env }>, next: Next) 
   c.header('Access-Control-Max-Age', '86400');
 
   if (c.req.method === 'OPTIONS') {
-    // CRITICAL: Use c.body() instead of raw new Response() so that
-    // all headers set via c.header() are preserved in the response.
-    // A raw `new Response(null, ...)` bypasses Hono's context and
-    // returns zero headers, causing CORS preflight failures.
     return c.body(null, 204);
   }
 
   await next();
 };
 
-// --- JWKS Cache ---
-let cachedJWKS: JsonWebKey | null = null;
-let jwksCachedAt = 0;
+// --- JWKS Cache (keyed by URL to support multiple Clerk instances) ---
+interface JWKSCacheEntry {
+  key: JsonWebKey;
+  cachedAt: number;
+}
+
+const jwksCache = new Map<string, JWKSCacheEntry>();
 const JWKS_CACHE_TTL = 3600000; // 1 hour in ms
 
 // Clock skew tolerance in seconds.
 // Clerk issues short-lived tokens (60s). This generous tolerance absorbs
 // clock drift between Clerk servers and Cloudflare edge nodes, network
-// latency, and token transit time. The admin console is already gated
-// behind Clerk authentication -- this JWT is a secondary verification
-// layer, so generosity here costs nothing in security.
+// latency, and token transit time. Both admin and customer consoles are
+// already gated behind Clerk authentication -- this JWT is a secondary
+// verification layer, so generosity here costs nothing in security.
 const CLOCK_SKEW_TOLERANCE = 120; // 2 minutes
 
 async function getClerkPublicKey(jwksUrl: string): Promise<CryptoKey> {
   const now = Date.now();
+  const cached = jwksCache.get(jwksUrl);
 
-  if (!cachedJWKS || now - jwksCachedAt > JWKS_CACHE_TTL) {
+  if (!cached || now - cached.cachedAt > JWKS_CACHE_TTL) {
     const response = await fetch(jwksUrl);
     if (!response.ok) {
       throw new Error(`Failed to fetch JWKS: ${response.status}`);
@@ -58,13 +59,13 @@ async function getClerkPublicKey(jwksUrl: string): Promise<CryptoKey> {
       throw new Error('No RS256 signing key found in JWKS');
     }
 
-    cachedJWKS = signingKey;
-    jwksCachedAt = now;
+    jwksCache.set(jwksUrl, { key: signingKey, cachedAt: now });
   }
 
+  const entry = jwksCache.get(jwksUrl)!;
   return crypto.subtle.importKey(
     'jwk',
-    cachedJWKS,
+    entry.key,
     { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
     false,
     ['verify']
@@ -72,9 +73,7 @@ async function getClerkPublicKey(jwksUrl: string): Promise<CryptoKey> {
 }
 
 function base64UrlDecode(str: string): Uint8Array {
-  // Convert base64url to base64
   let base64 = str.replace(/-/g, '+').replace(/_/g, '/');
-  // Pad with = if needed
   while (base64.length % 4 !== 0) {
     base64 += '=';
   }
@@ -86,10 +85,17 @@ function base64UrlDecode(str: string): Uint8Array {
   return bytes;
 }
 
-async function verifyJWT(token: string, jwksUrl: string): Promise<boolean> {
+/**
+ * Verify a JWT and return the decoded payload if valid, or null if invalid.
+ * Used by both admin and customer auth middleware.
+ */
+async function verifyAndDecodeJWT(
+  token: string,
+  jwksUrl: string
+): Promise<Record<string, unknown> | null> {
   try {
     const parts = token.split('.');
-    if (parts.length !== 3) return false;
+    if (parts.length !== 3) return null;
 
     const [headerB64, payloadB64, signatureB64] = parts;
 
@@ -105,30 +111,43 @@ async function verifyJWT(token: string, jwksUrl: string): Promise<boolean> {
       signedContent
     );
 
-    if (!isValid) return false;
+    if (!isValid) return null;
 
-    // Check expiration and not-before with clock skew tolerance
-    const payload = JSON.parse(new TextDecoder().decode(base64UrlDecode(payloadB64)));
+    // Decode and validate claims
+    const payload = JSON.parse(
+      new TextDecoder().decode(base64UrlDecode(payloadB64))
+    ) as Record<string, unknown>;
     const now = Math.floor(Date.now() / 1000);
 
-    if (payload.exp && (payload.exp + CLOCK_SKEW_TOLERANCE) < now) return false;
-    if (payload.nbf && (payload.nbf - CLOCK_SKEW_TOLERANCE) > now) return false;
+    if (payload.exp && ((payload.exp as number) + CLOCK_SKEW_TOLERANCE) < now) return null;
+    if (payload.nbf && ((payload.nbf as number) - CLOCK_SKEW_TOLERANCE) > now) return null;
 
-    return true;
+    return payload;
   } catch {
-    return false;
+    return null;
   }
 }
 
-// --- Admin Auth Middleware (Clerk JWT Verification) ---
-export const adminAuth = async (c: Context<{ Bindings: Env }>, next: Next) => {
-  const authHeader = c.req.header('Authorization');
+// Backward-compatible boolean wrapper used by adminAuth
+async function verifyJWT(token: string, jwksUrl: string): Promise<boolean> {
+  const payload = await verifyAndDecodeJWT(token, jwksUrl);
+  return payload !== null;
+}
 
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+// --- Helper: extract and verify Bearer token ---
+function extractBearerToken(c: Context<{ Bindings: Env }>): string | null {
+  const authHeader = c.req.header('Authorization');
+  if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
+  return authHeader.slice(7);
+}
+
+// --- Admin Auth Middleware (Clerk JWT via Admin instance) ---
+export const adminAuth = async (c: Context<{ Bindings: Env }>, next: Next) => {
+  const token = extractBearerToken(c);
+
+  if (!token) {
     return c.json({ error: 'Missing or invalid Authorization header' }, 401);
   }
-
-  const token = authHeader.slice(7);
 
   if (!c.env.CLERK_JWKS_URL) {
     console.error('CLERK_JWKS_URL not configured');
@@ -140,6 +159,35 @@ export const adminAuth = async (c: Context<{ Bindings: Env }>, next: Next) => {
   if (!isValid) {
     return c.json({ error: 'Invalid or expired token' }, 401);
   }
+
+  await next();
+};
+
+// --- Customer Auth Middleware (Clerk JWT via Customer instance) ---
+// Verifies tokens issued by the customer-facing Clerk instance and
+// stores the decoded JWT payload on the Hono context for downstream
+// route handlers to access customer identity (email, sub, etc.).
+export const customerAuth = async (c: Context<{ Bindings: Env }>, next: Next) => {
+  const token = extractBearerToken(c);
+
+  if (!token) {
+    return c.json({ error: 'Missing or invalid Authorization header' }, 401);
+  }
+
+  if (!c.env.CLERK_CUSTOMER_JWKS_URL) {
+    console.error('CLERK_CUSTOMER_JWKS_URL not configured');
+    return c.json({ error: 'Authentication service misconfigured' }, 500);
+  }
+
+  const payload = await verifyAndDecodeJWT(token, c.env.CLERK_CUSTOMER_JWKS_URL);
+
+  if (!payload) {
+    return c.json({ error: 'Invalid or expired token' }, 401);
+  }
+
+  // Store decoded claims for route handlers.
+  // Clerk JWTs include: sub (user ID), email, azp (authorized party), etc.
+  c.set('jwtPayload', payload);
 
   await next();
 };
