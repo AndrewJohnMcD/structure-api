@@ -733,9 +733,9 @@ customer.post('/select-region', async (c) => {
     }, 409);
   }
 
-  // Validate region
-  const body = await c.req.json<{ region: string }>();
-  const region = resolveRegion(body.region);
+  // Resolve region: use provided value or default to SGP1
+  const body = await c.req.json<{ region?: string }>();
+  const region = body.region ? resolveRegion(body.region) : resolveRegion(SNAPSHOT_REGION);
   if (!region) {
     return c.json({
       error: `Invalid region: ${body.region}. Currently available: Singapore (sgp1)`,
