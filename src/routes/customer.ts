@@ -136,16 +136,89 @@ async function resolveStripeCustomer(
   return found;
 }
 
-function extractIdentity(payload: Record<string, unknown>): {
-  clerkUserId: string;
-  email: string;
-} {
+// ============================================================
+// Identity Resolution
+// ============================================================
+// Clerk JWTs do not reliably include email claims. This function
+// extracts the user ID (sub) from the JWT, attempts the fast path
+// of reading email from claims, and falls back to the Clerk Users
+// API when the claim is absent. Handles multiple email addresses
+// by selecting the primary.
+// ============================================================
+
+interface ClerkEmailAddress {
+  email_address: string;
+  id: string;
+}
+
+interface ClerkUserResponse {
+  id: string;
+  primary_email_address_id: string | null;
+  email_addresses: ClerkEmailAddress[];
+}
+
+async function resolveIdentity(
+  payload: Record<string, unknown>,
+  clerkSecretKey: string
+): Promise<{ clerkUserId: string; email: string }> {
   const clerkUserId = (payload.sub as string) || '';
-  const email =
+
+  // Fast path: email present in JWT claims
+  const jwtEmail =
     (payload.email as string) ||
     (payload.email_address as string) ||
     '';
-  return { clerkUserId, email };
+
+  if (jwtEmail) {
+    console.log(`Identity resolved from JWT claims: userId=${clerkUserId}, email=${jwtEmail}`);
+    return { clerkUserId, email: jwtEmail };
+  }
+
+  // Slow path: fetch from Clerk Users API
+  if (!clerkUserId) {
+    console.warn('Identity resolution failed: no sub claim in JWT');
+    return { clerkUserId: '', email: '' };
+  }
+
+  try {
+    console.log(`JWT email claim absent, fetching from Clerk Users API for userId=${clerkUserId}`);
+    const res = await fetch(`https://api.clerk.com/v1/users/${clerkUserId}`, {
+      headers: { Authorization: `Bearer ${clerkSecretKey}` },
+    });
+
+    if (!res.ok) {
+      console.error(`Clerk Users API failed: ${res.status}`);
+      return { clerkUserId, email: '' };
+    }
+
+    const user = (await res.json()) as ClerkUserResponse;
+
+    // Handle multiple email addresses: find the primary
+    let resolvedEmail = '';
+    if (user.email_addresses && user.email_addresses.length > 0) {
+      if (user.primary_email_address_id) {
+        const primary = user.email_addresses.find(
+          (e) => e.id === user.primary_email_address_id
+        );
+        resolvedEmail = primary?.email_address || '';
+      }
+      // Fallback: if no primary match found, use the first address
+      if (!resolvedEmail) {
+        resolvedEmail = user.email_addresses[0].email_address || '';
+      }
+    }
+
+    if (resolvedEmail) {
+      console.log(`Identity resolved from Clerk API: userId=${clerkUserId}, email=${resolvedEmail}`);
+    } else {
+      console.warn(`Clerk user ${clerkUserId} has no email addresses`);
+    }
+
+    return { clerkUserId, email: resolvedEmail };
+  } catch (err) {
+    console.error('Clerk Users API call failed:', err);
+    return { clerkUserId, email: '' };
+  }
 }
 
 // ============================================================
@@ -171,7 +244,7 @@ customer.get('/status', async (c) => {
     return c.json(emptyResponse);
   }
 
-  const { clerkUserId, email } = extractIdentity(payload);
+  const { clerkUserId, email } = await resolveIdentity(payload, c.env.CLERK_SECRET_KEY);
 
   if (!email && !clerkUserId) {
     console.warn('Customer status: no identity found in JWT payload');
@@ -251,7 +324,7 @@ customer.post('/region', async (c) => {
     return c.json({ error: 'Unable to identify customer' }, 400);
   }
 
-  const { clerkUserId, email } = extractIdentity(payload);
+  const { clerkUserId, email } = await resolveIdentity(payload, c.env.CLERK_SECRET_KEY);
 
   if (!email && !clerkUserId) {
     return c.json({ error: 'Unable to identify customer' }, 400);
