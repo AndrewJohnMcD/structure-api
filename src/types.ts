@@ -9,5 +9,6 @@ export interface Env {
   DO_API_TOKEN: string;
   CLERK_JWKS_URL: string;
   CLERK_CUSTOMER_JWKS_URL: string;
+  CLERK_SECRET_KEY: string;
   ALLOWED_ORIGINS: string;
 }

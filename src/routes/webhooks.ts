@@ -14,7 +14,7 @@ const webhooks = new Hono<{ Bindings: Env }>();
  * Stripe calls it server-to-server with a signed payload.
  *
  * Handled events:
- *   - checkout.session.completed  -> record customer, write metadata
+ *   - checkout.session.completed  -> record customer, write metadata, send Clerk invitation
  *   - invoice.paid                -> log successful payment
  *   - invoice.payment_failed      -> log failed payment for alerting
  *   - customer.subscription.updated -> log plan changes
@@ -58,7 +58,7 @@ webhooks.post('/', async (c) => {
   try {
     switch (event.type) {
       case 'checkout.session.completed':
-        await handleCheckoutCompleted(stripe, event);
+        await handleCheckoutCompleted(stripe, event, c.env);
         break;
 
       case 'invoice.paid':
@@ -111,11 +111,12 @@ webhooks.post('/', async (c) => {
  * Actions:
  *   1. Extract customer ID, subscription ID, and referral code
  *   2. Write metadata back to the Stripe Customer object
- *   3. The Customer object becomes the single source of truth
+ *   3. Send a Clerk invitation email so the customer can create their Portal account
  */
 async function handleCheckoutCompleted(
   stripe: Stripe,
-  event: Stripe.Event
+  event: Stripe.Event,
+  env: Env
 ): Promise<void> {
   const session = event.data.object as Stripe.Checkout.Session;
 
@@ -131,7 +132,7 @@ async function handleCheckoutCompleted(
     `referral=${referralCode || 'none'}`
   );
 
-  // Write metadata to the Stripe Customer object.
+  // --- Step 1: Write metadata to the Stripe Customer object ---
   // This makes the Customer the single source of truth for:
   //   - subscription status (queryable via Stripe API)
   //   - referral attribution (for FirstPromoter reconciliation)
@@ -150,7 +151,58 @@ async function handleCheckoutCompleted(
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Unknown error';
     console.error(`Failed to update customer ${customerId} metadata:`, message);
-    // Don\'t throw -- we still want to return 200 to Stripe
+    // Don\'t throw -- we still want to send the invitation
+  }
+
+  // --- Step 2: Send Clerk invitation email ---
+  // This creates an invitation in the Portal Clerk instance.
+  // The customer receives an email with a link to create their account.
+  // Once they sign in, the Portal detects their Stripe subscription
+  // and presents the region selection onboarding flow.
+  if (!customerEmail) {
+    console.error('CHECKOUT: No customer email found -- cannot send Clerk invitation');
+    return;
+  }
+
+  if (!env.CLERK_SECRET_KEY) {
+    console.error('CHECKOUT: CLERK_SECRET_KEY not configured -- cannot send invitation');
+    return;
+  }
+
+  try {
+    const invitationResponse = await fetch('https://api.clerk.com/v1/invitations', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${env.CLERK_SECRET_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        email_address: customerEmail,
+        redirect_url: 'https://portal.optimisingperformance.com.au',
+        notify: true,
+        ignore_existing: true,
+      }),
+    });
+
+    if (invitationResponse.ok) {
+      const invitationData = await invitationResponse.json() as Record<string, unknown>;
+      console.log(
+        `CLERK INVITATION SENT: email=${customerEmail}, ` +
+        `invitation_id=${invitationData.id || 'unknown'}`
+      );
+    } else {
+      const errorBody = await invitationResponse.text();
+      console.error(
+        `CLERK INVITATION FAILED: status=${invitationResponse.status}, ` +
+        `email=${customerEmail}, ` +
+        `response=${errorBody}`
+      );
+    }
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    console.error(`CLERK INVITATION ERROR: email=${customerEmail}, error=${message}`);
+    // Don\'t throw -- the payment is already processed.
+    // The invitation failure is logged for manual follow-up.
   }
 }
 
