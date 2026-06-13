@@ -34,16 +34,10 @@ const SLUG_TO_NAME: Record<string, string> = Object.fromEntries(
 // Set of valid slugs for direct validation
 const VALID_SLUGS = new Set(Object.values(REGIONS));
 
-/**
- * Helper: resolve region input to a valid DO slug.
- * Accepts both friendly names ("Sydney, Australia") and slugs ("syd1").
- */
 function resolveRegion(input: string): { slug: string; name: string } | null {
-  // Check if input is a valid slug directly
   if (VALID_SLUGS.has(input)) {
     return { slug: input, name: SLUG_TO_NAME[input] || input };
   }
-  // Check if input is a friendly name
   const slug = REGIONS[input];
   if (slug) {
     return { slug, name: input };
@@ -51,76 +45,155 @@ function resolveRegion(input: string): { slug: string; name: string } | null {
   return null;
 }
 
-/**
- * Helper: find Stripe customer by email.
- * Returns the first matching customer or null.
- */
-async function findCustomerByEmail(
-  stripe: Stripe,
-  email: string
-): Promise<Stripe.Customer | null> {
-  const customers = await stripe.customers.list({ email, limit: 1 });
-  if (customers.data.length === 0) return null;
-  return customers.data[0];
+// ============================================================
+// Clerk Cache-Through Helpers
+// ============================================================
+
+async function getCachedStripeId(
+  clerkUserId: string,
+  clerkSecretKey: string
+): Promise<string | null> {
+  try {
+    const res = await fetch(`https://api.clerk.com/v1/users/${clerkUserId}`, {
+      headers: { Authorization: `Bearer ${clerkSecretKey}` },
+    });
+    if (!res.ok) {
+      console.warn(`Clerk user fetch failed: ${res.status}`);
+      return null;
+    }
+    const user = (await res.json()) as {
+      private_metadata?: { stripeCustomerId?: string };
+    };
+    return user.private_metadata?.stripeCustomerId || null;
+  } catch (err) {
+    console.warn('Clerk cache read failed:', err);
+    return null;
+  }
 }
 
-/**
- * GET /api/customer/status
- *
- * Returns the authenticated customer\'s subscription and provisioning status.
- * Uses the email from the Clerk JWT to look up the Stripe Customer object,
- * which serves as the single source of truth for all account state.
- *
- * Response shape:
- *   - found: boolean
- *   - status: "no_subscription" | "awaiting_region" | "provisioning" | "active"
- *   - subscription: { id, status, currentPeriodEnd } | null
- *   - provisioning: { region, regionName, dropletId, dropletIp, status } | null
- *   - customerId: string | null
- */
+async function cacheStripeId(
+  clerkUserId: string,
+  stripeCustomerId: string,
+  clerkSecretKey: string
+): Promise<void> {
+  try {
+    const res = await fetch(`https://api.clerk.com/v1/users/${clerkUserId}`, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${clerkSecretKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        private_metadata: { stripeCustomerId },
+      }),
+    });
+    if (res.ok) {
+      console.log(`Cached stripeCustomerId=${stripeCustomerId} for Clerk user ${clerkUserId}`);
+    } else {
+      console.warn(`Clerk cache write failed: ${res.status}`);
+    }
+  } catch (err) {
+    console.warn('Clerk cache write error:', err);
+  }
+}
+
+async function resolveStripeCustomer(
+  stripe: Stripe,
+  clerkUserId: string,
+  email: string,
+  clerkSecretKey: string
+): Promise<Stripe.Customer | null> {
+  // --- Fast path: check cache ---
+  const cachedId = await getCachedStripeId(clerkUserId, clerkSecretKey);
+
+  if (cachedId) {
+    try {
+      const cust = await stripe.customers.retrieve(cachedId);
+      if (cust && !(cust as Stripe.DeletedCustomer).deleted) {
+        console.log(`Cache HIT: Clerk=${clerkUserId} -> Stripe=${cachedId}`);
+        return cust as Stripe.Customer;
+      }
+    } catch {
+      console.warn(`Cached Stripe ID ${cachedId} invalid, falling through to email search`);
+    }
+  }
+
+  // --- Slow path: search by email ---
+  if (!email) return null;
+
+  const customers = await stripe.customers.list({ email, limit: 1 });
+  if (customers.data.length === 0) {
+    console.log(`Cache MISS: no Stripe customer found for email=${email}`);
+    return null;
+  }
+
+  const found = customers.data[0];
+  console.log(`Cache MISS: Clerk=${clerkUserId} -> Stripe=${found.id} (caching now)`);
+
+  // --- Write-through: cache for next time ---
+  await cacheStripeId(clerkUserId, found.id, clerkSecretKey);
+
+  return found;
+}
+
+function extractIdentity(payload: Record<string, unknown>): {
+  clerkUserId: string;
+  email: string;
+} {
+  const clerkUserId = (payload.sub as string) || '';
+  const email =
+    (payload.email as string) ||
+    (payload.email_address as string) ||
+    '';
+  return { clerkUserId, email };
+}
+
+// ============================================================
+// Routes
+// ============================================================
+
 customer.get('/status', async (c) => {
   const stripe = new Stripe(c.env.STRIPE_SECRET_KEY);
   const payload = c.get('jwtPayload') as Record<string, unknown> | undefined;
 
-  // Extract email from JWT claims.
-  // Clerk JWTs may include email at the top level or nested in metadata.
-  const email = (payload?.email as string) ||
-    (payload?.email_address as string) ||
-    '';
+  const emptyResponse = {
+    customerId: null,
+    email: '',
+    subscriptionStatus: 'none',
+    provisioningStatus: 'none',
+    region: null,
+    regionName: null,
+    dropletId: null,
+    dropletIp: null,
+  };
 
-  if (!email) {
-    console.warn('Customer status: no email found in JWT payload');
-    return c.json({
-      found: false,
-      status: 'no_subscription',
-      subscription: null,
-      provisioning: null,
-      customerId: null,
-    });
+  if (!payload) {
+    return c.json(emptyResponse);
+  }
+
+  const { clerkUserId, email } = extractIdentity(payload);
+
+  if (!email && !clerkUserId) {
+    console.warn('Customer status: no identity found in JWT payload');
+    return c.json(emptyResponse);
   }
 
   try {
-    const stripeCustomer = await findCustomerByEmail(stripe, email);
+    const stripeCustomer = await resolveStripeCustomer(
+      stripe, clerkUserId, email, c.env.CLERK_SECRET_KEY
+    );
 
     if (!stripeCustomer) {
-      return c.json({
-        found: false,
-        status: 'no_subscription',
-        subscription: null,
-        provisioning: null,
-        customerId: null,
-      });
+      return c.json({ ...emptyResponse, email });
     }
 
-    // Read metadata written by the webhook handler
     const meta = stripeCustomer.metadata || {};
-    const provisioningStatus = meta.provisioningStatus || 'unknown';
     const region = meta.region || null;
     const regionName = region ? (SLUG_TO_NAME[region] || region) : null;
     const dropletId = meta.dropletId || null;
     const dropletIp = meta.dropletIp || null;
+    const rawProvStatus = meta.provisioningStatus || '';
 
-    // Fetch active subscription
     const subscriptions = await stripe.subscriptions.list({
       customer: stripeCustomer.id,
       status: 'active',
@@ -128,44 +201,32 @@ customer.get('/status', async (c) => {
     });
 
     const activeSub = subscriptions.data[0] || null;
+    const subscriptionStatus = activeSub ? activeSub.status : 'none';
 
-    // Determine overall status
-    let status = 'no_subscription';
+    let provisioningStatus = 'none';
     if (activeSub) {
-      if (provisioningStatus === 'active' && dropletId) {
-        status = 'active';
-      } else if (provisioningStatus === 'provisioning') {
-        status = 'provisioning';
-      } else if (region) {
-        status = 'provisioning';
+      if (rawProvStatus === 'active' && dropletId) {
+        provisioningStatus = 'provisioned';
+      } else if (rawProvStatus === 'provisioning') {
+        provisioningStatus = 'provisioning';
+      } else if (rawProvStatus === 'provisioning_failed') {
+        provisioningStatus = 'provisioning_failed';
+      } else if (rawProvStatus === 'awaiting_region_selection' || !region) {
+        provisioningStatus = 'awaiting_region';
       } else {
-        status = 'awaiting_region';
+        provisioningStatus = 'awaiting_region';
       }
     }
 
     return c.json({
-      found: true,
-      status,
-      subscription: activeSub
-        ? {
-            id: activeSub.id,
-            status: activeSub.status,
-            currentPeriodEnd: new Date(
-              activeSub.current_period_end * 1000
-            ).toISOString(),
-          }
-        : null,
-      provisioning:
-        provisioningStatus !== 'unknown'
-          ? {
-              status: provisioningStatus,
-              region,
-              regionName,
-              dropletId,
-              dropletIp,
-            }
-          : null,
       customerId: stripeCustomer.id,
+      email,
+      subscriptionStatus,
+      provisioningStatus,
+      region,
+      regionName,
+      dropletId,
+      dropletIp,
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Unknown error';
@@ -174,11 +235,6 @@ customer.get('/status', async (c) => {
   }
 });
 
-/**
- * GET /api/customer/regions
- * Returns the list of available provisioning regions.
- * Identical to the admin endpoint but accessible to authenticated customers.
- */
 customer.get('/regions', (c) => {
   const regions = Object.entries(REGIONS).map(([name, slug]) => ({
     name,
@@ -187,32 +243,17 @@ customer.get('/regions', (c) => {
   return c.json({ regions });
 });
 
-/**
- * POST /api/customer/region
- *
- * Accepts the customer\'s region selection, writes it to Stripe metadata,
- * and triggers DigitalOcean Droplet provisioning.
- *
- * Request body: { region: string }
- * Region can be a friendly name or DO slug.
- *
- * This endpoint:
- *   1. Validates the customer has an active subscription
- *   2. Validates the region
- *   3. Checks they haven\'t already been provisioned
- *   4. Writes region + provisioning status to Stripe metadata
- *   5. Provisions a DigitalOcean Droplet
- *   6. Writes Droplet details back to Stripe metadata
- */
 customer.post('/region', async (c) => {
   const stripe = new Stripe(c.env.STRIPE_SECRET_KEY);
   const payload = c.get('jwtPayload') as Record<string, unknown> | undefined;
 
-  const email = (payload?.email as string) ||
-    (payload?.email_address as string) ||
-    '';
+  if (!payload) {
+    return c.json({ error: 'Unable to identify customer' }, 400);
+  }
 
-  if (!email) {
+  const { clerkUserId, email } = extractIdentity(payload);
+
+  if (!email && !clerkUserId) {
     return c.json({ error: 'Unable to identify customer' }, 400);
   }
 
@@ -222,7 +263,6 @@ customer.post('/region', async (c) => {
     return c.json({ error: 'Missing required field: region' }, 400);
   }
 
-  // Validate region
   const resolved = resolveRegion(body.region);
   if (!resolved) {
     return c.json(
@@ -238,13 +278,14 @@ customer.post('/region', async (c) => {
   }
 
   try {
-    // Find the Stripe customer
-    const stripeCustomer = await findCustomerByEmail(stripe, email);
+    const stripeCustomer = await resolveStripeCustomer(
+      stripe, clerkUserId, email, c.env.CLERK_SECRET_KEY
+    );
+
     if (!stripeCustomer) {
       return c.json({ error: 'No subscription found for this account' }, 404);
     }
 
-    // Verify active subscription exists
     const subscriptions = await stripe.subscriptions.list({
       customer: stripeCustomer.id,
       status: 'active',
@@ -255,14 +296,13 @@ customer.post('/region', async (c) => {
       return c.json({ error: 'No active subscription found' }, 403);
     }
 
-    // Check if already provisioned
     const meta = stripeCustomer.metadata || {};
     if (meta.dropletId && meta.provisioningStatus === 'active') {
       return c.json(
         {
           error: 'Instance already provisioned',
           provisioning: {
-            status: meta.provisioningStatus,
+            status: 'provisioned',
             region: meta.region,
             regionName: SLUG_TO_NAME[meta.region] || meta.region,
             dropletId: meta.dropletId,
@@ -273,7 +313,7 @@ customer.post('/region', async (c) => {
       );
     }
 
-    // Update Stripe metadata: mark as provisioning
+    // Mark as provisioning
     await stripe.customers.update(stripeCustomer.id, {
       metadata: {
         ...meta,
@@ -287,13 +327,9 @@ customer.post('/region', async (c) => {
         `email=${email}, region=${resolved.slug} (${resolved.name})`
     );
 
-    // Provision DigitalOcean Droplet
-    const dropletName = `structure-${stripeCustomer.id
-      .replace('cus_', '')
-      .toLowerCase()
-      .slice(0, 20)}`;
-
-    const doResponse = await fetch(`${DO_API}/droplets`, {
+    // Create DigitalOcean Droplet
+    const dropletName = `structure-${stripeCustomer.id.replace('cus_', '').toLowerCase()}`;
+    const doRes = await fetch(`${DO_API}/droplets`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${c.env.DO_API_TOKEN}`,
@@ -304,15 +340,13 @@ customer.post('/region', async (c) => {
         region: resolved.slug,
         size: 's-4vcpu-8gb-amd',
         image: 'ubuntu-24-04-x64',
-        tags: ['structure', 'customer', stripeCustomer.id],
+        tags: ['structure', 'customer'],
       }),
     });
 
-    if (!doResponse.ok) {
-      const doError = await doResponse.text();
-      console.error(`DigitalOcean provisioning failed: ${doError}`);
-
-      // Revert metadata to awaiting state
+    if (!doRes.ok) {
+      const errBody = await doRes.text();
+      console.error(`DO provisioning failed: ${doRes.status} ${errBody}`);
       await stripe.customers.update(stripeCustomer.id, {
         metadata: {
           ...meta,
@@ -320,48 +354,65 @@ customer.post('/region', async (c) => {
           provisioningStatus: 'provisioning_failed',
         },
       });
-
-      return c.json({ error: 'Failed to provision instance' }, 502);
+      return c.json({ error: 'Provisioning failed' }, 502);
     }
 
-    const doData = (await doResponse.json()) as {
+    const doData = (await doRes.json()) as {
       droplet: { id: number; networks?: { v4?: Array<{ ip_address: string; type: string }> } };
     };
+    const droplet = doData.droplet;
+    const publicNet = droplet.networks?.v4?.find((n) => n.type === 'public');
+    const dropletIp = publicNet?.ip_address || 'pending';
 
-    const dropletId = String(doData.droplet.id);
-    const publicNetwork = doData.droplet.networks?.v4?.find(
-      (n) => n.type === 'public'
-    );
-    const dropletIp = publicNetwork?.ip_address || 'pending';
-
-    // Write Droplet details back to Stripe metadata
+    // Update Stripe metadata with provisioning result
     await stripe.customers.update(stripeCustomer.id, {
       metadata: {
         ...meta,
         region: resolved.slug,
         provisioningStatus: 'active',
-        dropletId,
+        dropletId: String(droplet.id),
         dropletIp,
-        dropletName,
-        provisionedAt: new Date().toISOString(),
       },
     });
 
     console.log(
       `PROVISIONED: customer=${stripeCustomer.id}, ` +
-        `droplet=${dropletId}, ip=${dropletIp}, region=${resolved.slug}`
+        `droplet=${droplet.id}, ip=${dropletIp}, region=${resolved.slug}`
     );
 
+    // Send welcome email via Resend
+    try {
+      await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${c.env.RESEND_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          from: 'The Structure <noreply@mail.optimisingperformance.com.au>',
+          to: [email],
+          subject: 'Your Structure Instance is Ready',
+          html: `<h2>Welcome to The Structure</h2>
+            <p>Your instance has been provisioned successfully.</p>
+            <ul>
+              <li><strong>Region:</strong> ${resolved.name}</li>
+              <li><strong>IP Address:</strong> ${dropletIp}</li>
+            </ul>
+            <p>Access your dashboard at <a href="https://portal.optimisingperformance.com.au">portal.optimisingperformance.com.au</a></p>
+            <p>-- The Structure Team</p>`,
+        }),
+      });
+      console.log(`Welcome email sent to ${email}`);
+    } catch (emailErr) {
+      console.warn('Welcome email failed (non-blocking):', emailErr);
+    }
+
     return c.json({
-      success: true,
-      provisioning: {
-        status: 'active',
-        region: resolved.slug,
-        regionName: resolved.name,
-        dropletId,
-        dropletIp,
-        dropletName,
-      },
+      status: 'provisioned',
+      region: resolved.slug,
+      regionName: resolved.name,
+      dropletId: String(droplet.id),
+      dropletIp,
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Unknown error';
