@@ -20,19 +20,20 @@ const BASE_DOMAIN = 'optimisingperformance.com.au';
 // Sequential counter start
 const COUNTER_START = 51;
 
+// Golden snapshot ID (pre-built Structure instance with Docker + images cached)
+const GOLDEN_SNAPSHOT_ID = 232693913;
+
+// Customer Droplet specification
+const DROPLET_SIZE = 's-4vcpu-8gb-160gb-intel';
+
+// Snapshot region lock (snapshot only exists in SGP1)
+const SNAPSHOT_REGION = 'sgp1';
+
 // Region mapping: friendly name -> DO slug
+// Currently locked to Singapore while golden snapshot is SGP1-only.
+// Additional regions require snapshot distribution (Sprint 2 backlog).
 const REGIONS: Record<string, string> = {
-  'Sydney, Australia': 'syd1',
   'Singapore': 'sgp1',
-  'Bangalore, India': 'blr1',
-  'Amsterdam, Netherlands': 'ams3',
-  'Frankfurt, Germany': 'fra1',
-  'London, United Kingdom': 'lon1',
-  'New York, USA': 'nyc3',
-  'San Francisco, USA': 'sfo3',
-  'Toronto, Canada': 'tor1',
-  'Atlanta, USA': 'atl1',
-  'Richmond, USA': 'ric1',
 };
 
 // Reverse lookup: DO slug -> friendly name
@@ -52,6 +53,77 @@ function resolveRegion(input: string): { slug: string; name: string } | null {
     return { slug, name: input };
   }
   return null;
+}
+
+// ============================================================
+// Cloudflare Tunnel Helpers
+// ============================================================
+
+/**
+ * Generate a cryptographically random tunnel secret.
+ * Returns a 32-byte random value as base64 (Cloudflare Tunnel requirement).
+ */
+function generateTunnelSecret(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+/**
+ * Create a Cloudflare Tunnel via the API.
+ * Returns the tunnel ID on success, or null on failure.
+ */
+async function createTunnel(
+  cfToken: string,
+  accountId: string,
+  tunnelName: string,
+  tunnelSecret: string
+): Promise<string | null> {
+  try {
+    console.log(`Creating Cloudflare Tunnel: ${tunnelName}`);
+
+    const res = await fetch(
+      `${CF_API}/accounts/${accountId}/cfd_tunnel`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${cfToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: tunnelName,
+          tunnel_secret: tunnelSecret,
+          config_src: 'local',
+        }),
+      }
+    );
+
+    if (!res.ok) {
+      const errBody = await res.text();
+      console.error(`Tunnel creation failed: ${res.status} ${errBody}`);
+      return null;
+    }
+
+    const data = (await res.json()) as {
+      success: boolean;
+      result: { id: string };
+    };
+
+    if (!data.success || !data.result?.id) {
+      console.error('Tunnel creation response missing ID');
+      return null;
+    }
+
+    console.log(`Tunnel created: ID=${data.result.id}`);
+    return data.result.id;
+  } catch (err) {
+    console.error('Tunnel creation error:', err);
+    return null;
+  }
 }
 
 // ============================================================
@@ -75,34 +147,42 @@ function emailToPrefix(email: string): string {
 /**
  * Query Cloudflare DNS for existing customer subdomains to determine
  * the next sequential counter value.
- * Looks for records matching pattern: *-NN.optimisingperformance.com.au
+ * Checks both CNAME and A records to avoid collisions with legacy entries.
  */
 async function getNextCounter(cfToken: string, zoneId: string): Promise<number> {
   try {
-    const res = await fetch(
-      `${CF_API}/zones/${zoneId}/dns_records?type=A&per_page=100`,
-      { headers: { Authorization: `Bearer ${cfToken}` } }
-    );
-
-    if (!res.ok) {
-      console.warn(`Cloudflare DNS list failed: ${res.status}`);
-      return COUNTER_START;
-    }
-
-    const data = (await res.json()) as {
-      result: Array<{ name: string }>;
-    };
-
     const escaped = BASE_DOMAIN.replace(/\./g, '\\.');
     const counterRegex = new RegExp(`-(\\d+)\\.${escaped}$`);
     let maxCounter = COUNTER_START - 1;
 
-    for (const record of data.result) {
-      const match = record.name.match(counterRegex);
-      if (match) {
-        const num = parseInt(match[1], 10);
-        if (num >= COUNTER_START && num > maxCounter) {
-          maxCounter = num;
+    // Check CNAME records (new tunnel-based subdomains)
+    const resCname = await fetch(
+      `${CF_API}/zones/${zoneId}/dns_records?type=CNAME&per_page=100`,
+      { headers: { Authorization: `Bearer ${cfToken}` } }
+    );
+    if (resCname.ok) {
+      const dataCname = (await resCname.json()) as { result: Array<{ name: string }> };
+      for (const record of dataCname.result) {
+        const match = record.name.match(counterRegex);
+        if (match) {
+          const num = parseInt(match[1], 10);
+          if (num >= COUNTER_START && num > maxCounter) maxCounter = num;
+        }
+      }
+    }
+
+    // Check A records (legacy direct-IP subdomains)
+    const resA = await fetch(
+      `${CF_API}/zones/${zoneId}/dns_records?type=A&per_page=100`,
+      { headers: { Authorization: `Bearer ${cfToken}` } }
+    );
+    if (resA.ok) {
+      const dataA = (await resA.json()) as { result: Array<{ name: string }> };
+      for (const record of dataA.result) {
+        const match = record.name.match(counterRegex);
+        if (match) {
+          const num = parseInt(match[1], 10);
+          if (num >= COUNTER_START && num > maxCounter) maxCounter = num;
         }
       }
     }
@@ -117,22 +197,19 @@ async function getNextCounter(cfToken: string, zoneId: string): Promise<number> 
 }
 
 /**
- * Create a proxied Cloudflare DNS A record for a customer subdomain.
+ * Create a proxied Cloudflare CNAME record pointing to a tunnel.
  * Proxied = true means Cloudflare handles SSL automatically.
  */
-async function createSubdomain(
+async function createCnameRecord(
   cfToken: string,
   zoneId: string,
-  email: string,
-  ip: string
-): Promise<string | null> {
+  name: string,
+  tunnelId: string,
+  comment: string
+): Promise<boolean> {
   try {
-    const prefix = emailToPrefix(email);
-    const counter = await getNextCounter(cfToken, zoneId);
-    const subdomain = `${prefix}-${counter}`;
-    const fqdn = `${subdomain}.${BASE_DOMAIN}`;
-
-    console.log(`Creating Cloudflare DNS: ${fqdn} -> ${ip} (proxied)`);
+    const target = `${tunnelId}.cfargotunnel.com`;
+    console.log(`Creating CNAME: ${name} -> ${target}`);
 
     const res = await fetch(`${CF_API}/zones/${zoneId}/dns_records`, {
       method: 'POST',
@@ -141,59 +218,107 @@ async function createSubdomain(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        type: 'A',
-        name: subdomain,
-        content: ip,
+        type: 'CNAME',
+        name,
+        content: target,
         proxied: true,
         ttl: 1,
-        comment: `Structure customer instance - ${email}`,
+        comment,
       }),
     });
 
     if (!res.ok) {
       const errBody = await res.text();
-      console.error(`Cloudflare DNS creation failed: ${res.status} ${errBody}`);
-      return null;
+      console.error(`CNAME creation failed for ${name}: ${res.status} ${errBody}`);
+      return false;
     }
 
     const result = (await res.json()) as { success: boolean };
     if (result.success) {
-      console.log(`Cloudflare DNS created: ${fqdn}`);
-      return fqdn;
+      console.log(`CNAME created: ${name}`);
+      return true;
     }
-
-    return null;
+    return false;
   } catch (err) {
-    console.error('Cloudflare DNS creation error:', err);
-    return null;
+    console.error(`CNAME creation error for ${name}:`, err);
+    return false;
   }
 }
 
+// ============================================================
+// Cloud-Init Builder
+// ============================================================
+
 /**
- * Check if a Cloudflare DNS record already exists for a given FQDN.
+ * Build the cloud-init user_data script that configures a fresh
+ * Droplet booted from the golden snapshot.
+ *
+ * This script runs once on first boot and:
+ * 1. Writes cloudflared credentials.json
+ * 2. Writes cloudflared config.yml with ingress rules
+ * 3. Updates .env with the customer's STRUCTURE_DOMAIN
+ * 4. Starts the full 16-container stack via docker compose
  */
-async function findDnsRecord(
-  cfToken: string,
-  zoneId: string,
-  fqdn: string
-): Promise<string | null> {
-  try {
-    const res = await fetch(
-      `${CF_API}/zones/${zoneId}/dns_records?type=A&name=${encodeURIComponent(fqdn)}`,
-      { headers: { Authorization: `Bearer ${cfToken}` } }
-    );
+function buildCloudInit(
+  tunnelId: string,
+  tunnelSecret: string,
+  accountId: string,
+  subdomain: string
+): string {
+  const fqdn = `${subdomain}.${BASE_DOMAIN}`;
 
-    if (!res.ok) return null;
+  // Build the cloud-init script using heredocs for reliable multi-line file writing.
+  // Template literals handle JS interpolation; bash variables use literal ${} in single-quoted lines.
+  const script = `#!/bin/bash
+set -euo pipefail
 
-    const data = (await res.json()) as {
-      result: Array<{ id: string; name: string }>;
-    };
+# Log all output for debugging
+exec > /var/log/structure-init.log 2>&1
+echo "[$(date)] Structure cloud-init starting"
 
-    const match = data.result.find((r) => r.name === fqdn);
-    return match?.id || null;
-  } catch {
-    return null;
-  }
+# --- 1. Write Cloudflare Tunnel credentials ---
+mkdir -p /root/.cloudflared
+cat > /root/.cloudflared/credentials.json << 'CRED_EOF'
+{"AccountTag":"${accountId}","TunnelID":"${tunnelId}","TunnelSecret":"${tunnelSecret}"}
+CRED_EOF
+chmod 600 /root/.cloudflared/credentials.json
+echo "[$(date)] Tunnel credentials written"
+
+# --- 2. Write Cloudflare Tunnel config ---
+cat > /root/.cloudflared/config.yml << 'CONFIG_EOF'
+tunnel: ${tunnelId}
+credentials-file: /root/.cloudflared/credentials.json
+
+ingress:
+  - hostname: ${fqdn}
+    service: http://localhost:80
+  - hostname: "*.${fqdn}"
+    service: http://localhost:8080
+  - service: http_status:404
+CONFIG_EOF
+echo "[$(date)] Tunnel config written"
+
+# --- 3. Update STRUCTURE_DOMAIN in .env ---
+cd /root/TheStructure-Quantum
+if [ -f .env ]; then
+  sed -i 's|^STRUCTURE_DOMAIN=.*|STRUCTURE_DOMAIN=${fqdn}|' .env
+  echo "[$(date)] STRUCTURE_DOMAIN updated to ${fqdn}"
+else
+  echo "[$(date)] WARNING: .env not found, skipping domain update"
+fi
+
+# --- 4. Start the full stack ---
+cd /root/TheStructure-Quantum
+docker compose up -d
+echo "[$(date)] Docker Compose started"
+
+# --- 5. Wait for containers to stabilize ---
+sleep 10
+RUNNING=$(docker ps --format "{{.Names}}" | wc -l)
+echo "[$(date)] Structure cloud-init complete. $RUNNING containers running."
+`;
+
+  return script;
 }
 
 // ============================================================
@@ -203,6 +328,7 @@ async function findDnsRecord(
 /**
  * Retry loop to resolve a Droplet public IP.
  * 5 retries at 3-second intervals = 15 seconds max wait.
+ * Used for metadata recording (not DNS -- tunnel handles routing).
  */
 async function resolveDropletIp(
   doToken: string,
@@ -249,70 +375,6 @@ async function resolveDropletIp(
 
   console.warn('DO IP resolution exhausted all 5 attempts');
   return null;
-}
-
-// ============================================================
-// Self-Healing Logic
-// ============================================================
-
-/**
- * Repairs incomplete provisioning records.
- * 1. IP still "pending" -> queries DigitalOcean for real IP
- * 2. Subdomain missing -> creates Cloudflare DNS record
- * Updates Stripe metadata with healed values.
- */
-async function selfHeal(
-  stripe: Stripe,
-  customerId: string,
-  meta: Record<string, string>,
-  email: string,
-  env: Env
-): Promise<{ dropletIp: string; subdomain: string }> {
-  let dropletIp = meta.dropletIp || 'pending';
-  let subdomain = meta.subdomain || '';
-  const dropletId = meta.dropletId || '';
-  let healed = false;
-
-  // Heal 1: Resolve pending IP
-  if ((dropletIp === 'pending' || !dropletIp) && dropletId) {
-    console.log(`Self-healing: resolving IP for droplet ${dropletId}`);
-    const resolvedIp = await resolveDropletIp(env.DO_API_TOKEN, dropletId);
-    if (resolvedIp) {
-      dropletIp = resolvedIp;
-      healed = true;
-      console.log(`Self-healing: IP resolved to ${resolvedIp}`);
-    }
-  }
-
-  // Heal 2: Create missing subdomain (only if we have a real IP)
-  if (!subdomain && dropletIp && dropletIp !== 'pending') {
-    console.log(`Self-healing: creating subdomain for ${email}`);
-    const created = await createSubdomain(
-      env.CF_API_TOKEN,
-      env.CF_ZONE_ID,
-      email,
-      dropletIp
-    );
-    if (created) {
-      subdomain = created;
-      healed = true;
-      console.log(`Self-healing: subdomain created: ${created}`);
-    }
-  }
-
-  // Write healed values back to Stripe
-  if (healed) {
-    await stripe.customers.update(customerId, {
-      metadata: {
-        ...meta,
-        dropletIp,
-        subdomain,
-      },
-    });
-    console.log(`Self-healing: Stripe metadata updated for ${customerId}`);
-  }
-
-  return { dropletIp, subdomain };
 }
 
 // ============================================================
@@ -484,6 +546,54 @@ async function resolveIdentity(
 }
 
 // ============================================================
+// Self-Healing Logic
+// ============================================================
+
+/**
+ * Repairs incomplete provisioning records.
+ * For tunnel-based deployments, self-healing focuses on:
+ * 1. IP still "pending" -> queries DigitalOcean for real IP (metadata only)
+ * 2. Subdomain or tunnel missing -> logs warning (requires manual intervention)
+ * Updates Stripe metadata with healed values.
+ */
+async function selfHeal(
+  stripe: Stripe,
+  customerId: string,
+  meta: Record<string, string>,
+  email: string,
+  env: Env
+): Promise<{ dropletIp: string; subdomain: string }> {
+  let dropletIp = meta.dropletIp || 'pending';
+  const subdomain = meta.subdomain || '';
+  const dropletId = meta.dropletId || '';
+  let healed = false;
+
+  // Heal: Resolve pending IP (for metadata/monitoring only)
+  if ((dropletIp === 'pending' || !dropletIp) && dropletId) {
+    console.log(`Self-healing: resolving IP for droplet ${dropletId}`);
+    const resolvedIp = await resolveDropletIp(env.DO_API_TOKEN, dropletId);
+    if (resolvedIp) {
+      dropletIp = resolvedIp;
+      healed = true;
+      console.log(`Self-healing: IP resolved to ${resolvedIp}`);
+    }
+  }
+
+  // Write healed values back to Stripe
+  if (healed) {
+    await stripe.customers.update(customerId, {
+      metadata: {
+        ...meta,
+        dropletIp,
+      },
+    });
+    console.log(`Self-healing: Stripe metadata updated for ${customerId}`);
+  }
+
+  return { dropletIp, subdomain };
+}
+
+// ============================================================
 // Routes
 // ============================================================
 
@@ -509,9 +619,9 @@ customer.get('/status', async (c) => {
   }
 
   // Resolve Stripe customer via cache-through
-  const customer = await resolveStripeCustomer(stripe, clerkUserId, email, c.env.CLERK_SECRET_KEY);
+  const cust = await resolveStripeCustomer(stripe, clerkUserId, email, c.env.CLERK_SECRET_KEY);
 
-  if (!customer) {
+  if (!cust) {
     return c.json({
       subscriptionStatus: 'none',
       provisioningStatus: 'none',
@@ -524,13 +634,13 @@ customer.get('/status', async (c) => {
 
   // Get subscription
   const subs = await stripe.subscriptions.list({
-    customer: customer.id,
+    customer: cust.id,
     limit: 1,
     status: 'active',
   });
 
   const sub = subs.data[0] || null;
-  const meta = (customer.metadata || {}) as Record<string, string>;
+  const meta = (cust.metadata || {}) as Record<string, string>;
   const provisioningStatus = meta.provisioningStatus || 'none';
 
   // Self-heal if provisioning is incomplete
@@ -539,10 +649,10 @@ customer.get('/status', async (c) => {
 
   if (
     provisioningStatus === 'provisioned' &&
-    (dropletIp === 'pending' || !dropletIp || !subdomain)
+    (dropletIp === 'pending' || !dropletIp)
   ) {
-    console.log(`Self-healing triggered for customer ${customer.id}`);
-    const healed = await selfHeal(stripe, customer.id, meta, email, c.env);
+    console.log(`Self-healing triggered for customer ${cust.id}`);
+    const healed = await selfHeal(stripe, cust.id, meta, email, c.env);
     dropletIp = healed.dropletIp;
     subdomain = healed.subdomain;
   }
@@ -572,6 +682,7 @@ customer.get('/status', async (c) => {
 /**
  * GET /api/customer/regions
  * Returns available DigitalOcean regions.
+ * Currently locked to Singapore (golden snapshot location).
  */
 customer.get('/regions', async (c) => {
   const regionList = Object.entries(REGIONS).map(([name, slug]) => ({
@@ -583,9 +694,19 @@ customer.get('/regions', async (c) => {
 
 /**
  * POST /api/customer/select-region
+ *
  * Customer selects a region after purchase.
- * Provisions a DigitalOcean Droplet, resolves IP, creates Cloudflare subdomain,
- * stores everything in Stripe metadata, and sends welcome email.
+ * Executes the tunnel-first provisioning sequence:
+ *
+ * 1. Generate tunnel secret
+ * 2. Determine unique subdomain (email-prefix-NN)
+ * 3. Create Cloudflare Tunnel
+ * 4. Create CNAME DNS records (subdomain + wildcard)
+ * 5. Build cloud-init user_data script
+ * 6. Create DigitalOcean Droplet from golden snapshot
+ * 7. Resolve Droplet IP (metadata only -- tunnel handles routing)
+ * 8. Update Stripe metadata
+ * 9. Send welcome email
  */
 customer.post('/select-region', async (c) => {
   const stripe = new Stripe(c.env.STRIPE_SECRET_KEY);
@@ -616,10 +737,13 @@ customer.post('/select-region', async (c) => {
   const body = await c.req.json<{ region: string }>();
   const region = resolveRegion(body.region);
   if (!region) {
-    return c.json({ error: `Invalid region: ${body.region}` }, 400);
+    return c.json({
+      error: `Invalid region: ${body.region}. Currently available: Singapore (sgp1)`,
+      availableRegions: Object.entries(REGIONS).map(([name, slug]) => ({ name, slug })),
+    }, 400);
   }
 
-  console.log(`Provisioning droplet for ${email} in ${region.name} (${region.slug})`);
+  console.log(`=== PROVISIONING START: ${email} in ${region.name} (${region.slug}) ===`);
 
   // Mark as provisioning
   await stripe.customers.update(cust.id, {
@@ -631,7 +755,72 @@ customer.post('/select-region', async (c) => {
   });
 
   try {
-    // Create DigitalOcean Droplet
+    // --- Step 1: Generate tunnel secret ---
+    const tunnelSecret = generateTunnelSecret();
+    console.log('Step 1/9: Tunnel secret generated');
+
+    // --- Step 2: Determine unique subdomain ---
+    const prefix = emailToPrefix(email);
+    const counter = await getNextCounter(c.env.CF_API_TOKEN, c.env.CF_ZONE_ID);
+    const subdomain = `${prefix}-${counter}`;
+    const fqdn = `${subdomain}.${BASE_DOMAIN}`;
+    console.log(`Step 2/9: Subdomain determined: ${fqdn}`);
+
+    // --- Step 3: Create Cloudflare Tunnel ---
+    const tunnelName = `structure-${subdomain}`;
+    const tunnelId = await createTunnel(
+      c.env.CF_API_TOKEN,
+      c.env.CF_ACCOUNT_ID,
+      tunnelName,
+      tunnelSecret
+    );
+
+    if (!tunnelId) {
+      console.error('PROVISIONING FAILED: Tunnel creation failed');
+      await stripe.customers.update(cust.id, {
+        metadata: { ...meta, provisioningStatus: 'failed' },
+      });
+      return c.json({ error: 'Failed to create secure tunnel' }, 502);
+    }
+    console.log(`Step 3/9: Tunnel created: ${tunnelId}`);
+
+    // --- Step 4: Create CNAME DNS records ---
+    const mainCname = await createCnameRecord(
+      c.env.CF_API_TOKEN,
+      c.env.CF_ZONE_ID,
+      subdomain,
+      tunnelId,
+      `Structure customer instance - ${email}`
+    );
+
+    const wildcardCname = await createCnameRecord(
+      c.env.CF_API_TOKEN,
+      c.env.CF_ZONE_ID,
+      `*.${subdomain}`,
+      tunnelId,
+      `Structure customer tools wildcard - ${email}`
+    );
+
+    if (!mainCname) {
+      console.error('PROVISIONING WARNING: Main CNAME creation failed');
+      // Continue -- tunnel exists, DNS can be fixed manually
+    }
+    if (!wildcardCname) {
+      console.error('PROVISIONING WARNING: Wildcard CNAME creation failed');
+      // Continue -- main subdomain may still work
+    }
+    console.log(`Step 4/9: DNS records created (main=${mainCname}, wildcard=${wildcardCname})`);
+
+    // --- Step 5: Build cloud-init user_data ---
+    const userData = buildCloudInit(
+      tunnelId,
+      tunnelSecret,
+      c.env.CF_ACCOUNT_ID,
+      subdomain
+    );
+    console.log('Step 5/9: Cloud-init script built');
+
+    // --- Step 6: Create DigitalOcean Droplet from golden snapshot ---
     const dropletRes = await fetch(`${DO_API}/droplets`, {
       method: 'POST',
       headers: {
@@ -639,18 +828,19 @@ customer.post('/select-region', async (c) => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        name: `structure-${emailToPrefix(email)}`,
-        region: region.slug,
-        size: 's-2vcpu-4gb',
-        image: 'ubuntu-24-04-x64',
+        name: `structure-${subdomain}`,
+        region: SNAPSHOT_REGION,
+        size: DROPLET_SIZE,
+        image: GOLDEN_SNAPSHOT_ID,
         tags: ['structure', 'customer'],
+        user_data: userData,
+        monitoring: true,
       }),
     });
 
     if (!dropletRes.ok) {
       const errText = await dropletRes.text();
       console.error(`DO Droplet creation failed: ${dropletRes.status} ${errText}`);
-      // Revert status
       await stripe.customers.update(cust.id, {
         metadata: { ...meta, provisioningStatus: 'failed' },
       });
@@ -661,42 +851,29 @@ customer.post('/select-region', async (c) => {
       droplet: { id: number };
     };
     const dropletId = String(dropletData.droplet.id);
-    console.log(`Droplet created: ID=${dropletId}`);
+    console.log(`Step 6/9: Droplet created from snapshot: ID=${dropletId}`);
 
-    // Resolve IP with retry loop (5 attempts, 3s intervals)
+    // --- Step 7: Resolve Droplet IP (metadata only) ---
     const dropletIp = await resolveDropletIp(c.env.DO_API_TOKEN, dropletId);
+    console.log(`Step 7/9: Droplet IP=${dropletIp || 'pending'}`);
 
-    let subdomain: string | null = null;
-
-    if (dropletIp) {
-      // Create Cloudflare subdomain
-      subdomain = await createSubdomain(
-        c.env.CF_API_TOKEN,
-        c.env.CF_ZONE_ID,
-        email,
-        dropletIp
-      );
-    }
-
-    // Update Stripe metadata with all provisioning data
+    // --- Step 8: Update Stripe metadata ---
     const finalMeta: Record<string, string> = {
       ...meta,
       provisioningStatus: 'provisioned',
       dropletId,
       dropletRegion: region.name,
       dropletIp: dropletIp || 'pending',
-      subdomain: subdomain || '',
+      subdomain: fqdn,
+      tunnelId,
+      tunnelName,
     };
 
     await stripe.customers.update(cust.id, { metadata: finalMeta });
-    console.log(`Stripe metadata updated: dropletId=${dropletId}, ip=${dropletIp}, subdomain=${subdomain}`);
+    console.log('Step 8/9: Stripe metadata updated');
 
-    // Send welcome email via Resend
-    const instanceUrl = subdomain
-      ? `https://${subdomain}`
-      : dropletIp
-        ? `http://${dropletIp}`
-        : 'Provisioning in progress...';
+    // --- Step 9: Send welcome email ---
+    const instanceUrl = `https://${fqdn}`;
 
     try {
       await fetch('https://api.resend.com/emails', {
@@ -712,7 +889,7 @@ customer.post('/select-region', async (c) => {
           html: `
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
               <h1 style="color: #1e40af;">Welcome to The Structure</h1>
-              <p>Your dedicated instance has been provisioned successfully.</p>
+              <p>Your dedicated quantum orchestration instance has been provisioned and is starting up.</p>
               <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
                 <tr>
                   <td style="padding: 8px; border: 1px solid #e5e7eb; font-weight: bold;">Region</td>
@@ -723,24 +900,28 @@ customer.post('/select-region', async (c) => {
                   <td style="padding: 8px; border: 1px solid #e5e7eb;"><a href="${instanceUrl}">${instanceUrl}</a></td>
                 </tr>
               </table>
-              <p>You can access your instance from the <a href="https://portal.optimisingperformance.com.au">Customer Portal</a>.</p>
+              <p><strong>Please allow 3-5 minutes</strong> for your instance to fully initialize on first boot.</p>
+              <p>You can access your instance from the <a href="https://portal.optimisingperformance.com.au">Customer Portal</a> or directly via the URL above.</p>
               <p style="color: #6b7280; font-size: 12px;">The Structure by Optimising Performance Solutions</p>
             </div>
           `,
         }),
       });
-      console.log(`Welcome email sent to ${email}`);
+      console.log(`Step 9/9: Welcome email sent to ${email}`);
     } catch (emailErr) {
       console.warn('Welcome email failed (non-blocking):', emailErr);
     }
+
+    console.log(`=== PROVISIONING COMPLETE: ${email} -> ${fqdn} ===`);
 
     return c.json({
       success: true,
       dropletId,
       dropletIp: dropletIp || 'pending',
       region: region.name,
-      subdomain: subdomain || null,
+      subdomain: fqdn,
       instanceUrl,
+      tunnelId,
     });
   } catch (err) {
     console.error('Provisioning error:', err);

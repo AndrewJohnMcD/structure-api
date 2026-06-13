@@ -21,6 +21,7 @@ routes = [{ pattern = "api.optimisingperformance.com.au", custom_domain = true }
 # ALLOWED_ORIGINS
 # CF_API_TOKEN          — Cloudflare API token for DNS record management
 # CF_ZONE_ID            — Cloudflare Zone ID for optimisingperformance.com.au
+# CF_ACCOUNT_ID         — Cloudflare Account ID for Tunnel creation
 
 [observability]
 enabled = true

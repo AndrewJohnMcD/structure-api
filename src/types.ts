@@ -13,4 +13,5 @@ export interface Env {
   ALLOWED_ORIGINS: string;
   CF_API_TOKEN: string;
   CF_ZONE_ID: string;
+  CF_ACCOUNT_ID: string;
 }
