@@ -11,4 +11,6 @@ export interface Env {
   CLERK_CUSTOMER_JWKS_URL: string;
   CLERK_SECRET_KEY: string;
   ALLOWED_ORIGINS: string;
+  CF_API_TOKEN: string;
+  CF_ZONE_ID: string;
 }

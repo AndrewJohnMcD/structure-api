@@ -16,7 +16,11 @@ routes = [{ pattern = "api.optimisingperformance.com.au", custom_domain = true }
 # RESEND_API_KEY
 # DO_API_TOKEN
 # CLERK_JWKS_URL
+# CLERK_CUSTOMER_JWKS_URL
+# CLERK_SECRET_KEY
 # ALLOWED_ORIGINS
+# CF_API_TOKEN          — Cloudflare API token for DNS record management
+# CF_ZONE_ID            — Cloudflare Zone ID for optimisingperformance.com.au
 
 [observability]
 enabled = true
