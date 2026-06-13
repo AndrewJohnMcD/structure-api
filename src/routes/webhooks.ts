@@ -178,7 +178,7 @@ async function handleCheckoutCompleted(
       },
       body: JSON.stringify({
         email_address: customerEmail,
-        redirect_url: 'https://portal.optimisingperformance.com.au',
+        redirect_url: 'https://portal.optimisingperformance.com.au/sign-up',
         notify: true,
         ignore_existing: true,
       }),
