@@ -3,7 +3,7 @@ import Stripe from 'stripe';
 import { Env } from '../types';
 import { customerAuth } from '../middleware';
 
-const customer = new Hono<{ Bindings: Env }>();
+const customer = new Hono<{ Bindings: Env; Variables: { jwtPayload: Record<string, unknown> } }>();
 
 // Apply customer authentication to all routes
 customer.use('*', customerAuth);
@@ -494,7 +494,7 @@ async function resolveIdentity(
  */
 customer.get('/status', async (c) => {
   const stripe = new Stripe(c.env.STRIPE_SECRET_KEY);
-  const payload = (c as unknown as { jwtPayload: Record<string, unknown> }).jwtPayload;
+  const payload = c.get('jwtPayload') as Record<string, unknown>;
   const { clerkUserId, email } = await resolveIdentity(payload, c.env.CLERK_SECRET_KEY);
 
   if (!email) {
@@ -589,7 +589,7 @@ customer.get('/regions', async (c) => {
  */
 customer.post('/select-region', async (c) => {
   const stripe = new Stripe(c.env.STRIPE_SECRET_KEY);
-  const payload = (c as unknown as { jwtPayload: Record<string, unknown> }).jwtPayload;
+  const payload = c.get('jwtPayload') as Record<string, unknown>;
   const { clerkUserId, email } = await resolveIdentity(payload, c.env.CLERK_SECRET_KEY);
 
   if (!email) {
