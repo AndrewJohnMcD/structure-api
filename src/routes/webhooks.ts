@@ -14,7 +14,7 @@ const webhooks = new Hono<{ Bindings: Env }>();
  * Stripe calls it server-to-server with a signed payload.
  *
  * Handled events:
- *   - checkout.session.completed  -> record customer, write metadata, send Clerk invitation
+ *   - checkout.session.completed  -> record customer, write metadata, send Clerk invitation, create affiliate
  *   - invoice.paid                -> log successful payment
  *   - invoice.payment_failed      -> log failed payment for alerting
  *   - customer.subscription.updated -> log plan changes
@@ -112,6 +112,7 @@ webhooks.post('/', async (c) => {
  *   1. Extract customer ID, subscription ID, and referral code
  *   2. Write metadata back to the Stripe Customer object
  *   3. Send a Clerk invitation email so the customer can create their Portal account
+ *   4. Create a FirstPromoter affiliate record for viral referral distribution
  */
 async function handleCheckoutCompleted(
   stripe: Stripe,
@@ -203,6 +204,89 @@ async function handleCheckoutCompleted(
     console.error(`CLERK INVITATION ERROR: email=${customerEmail}, error=${message}`);
     // Don\'t throw -- the payment is already processed.
     // The invitation failure is logged for manual follow-up.
+  }
+
+  // --- Step 3: Create FirstPromoter affiliate record ---
+  // Every paying customer automatically becomes an affiliate with their own
+  // referral code, enabling viral distribution from day one.
+  // This block is fail-open: FirstPromoter failures never block onboarding.
+  try {
+    if (!env.FIRSTPROMOTER_API_KEY) {
+      console.warn('CHECKOUT: FIRSTPROMOTER_API_KEY not configured -- skipping affiliate creation');
+    } else {
+      // 3a. If the customer used a referral code, resolve the parent promoter ID
+      //     so the new affiliate is linked under the referring partner's tree.
+      let parentPromoterId: string | null = null;
+
+      if (referralCode) {
+        try {
+          const parentRes = await fetch(
+            `https://firstpromoter.com/api/v1/promoters/list?ref_id=${encodeURIComponent(referralCode)}`,
+            {
+              headers: {
+                'x-api-key': env.FIRSTPROMOTER_API_KEY,
+                'Content-Type': 'application/json',
+              },
+            }
+          );
+
+          if (parentRes.ok) {
+            const parents = await parentRes.json() as Array<{ id: number; default_ref_id: string }>;
+            const match = parents.find((p) => p.default_ref_id === referralCode);
+            if (match) {
+              parentPromoterId = String(match.id);
+              console.log(`FIRSTPROMOTER: Resolved parent promoter ID=${parentPromoterId} for ref_id=${referralCode}`);
+            }
+          }
+        } catch (parentErr: unknown) {
+          const msg = parentErr instanceof Error ? parentErr.message : 'Unknown error';
+          console.warn(`FIRSTPROMOTER: Parent lookup failed for ref_id=${referralCode}: ${msg}`);
+          // Continue without parent -- customer still becomes a standalone Tier 1 affiliate
+        }
+      }
+
+      // 3b. Create the new promoter via FirstPromoter v1 API
+      //     CRITICAL: v1 API requires application/x-www-form-urlencoded, NOT JSON.
+      const customerName = session.customer_details?.name || '';
+      const formParams = new URLSearchParams();
+      formParams.append('email', customerEmail);
+      if (customerName) formParams.append('first_name', customerName);
+      if (parentPromoterId) formParams.append('parent_promoter_id', parentPromoterId);
+
+      const createRes = await fetch('https://firstpromoter.com/api/v1/promoters/create', {
+        method: 'POST',
+        headers: {
+          'x-api-key': env.FIRSTPROMOTER_API_KEY,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: formParams.toString(),
+      });
+
+      if (createRes.ok) {
+        const newPromoter = await createRes.json() as Record<string, unknown>;
+        console.log(
+          `FIRSTPROMOTER AFFILIATE CREATED: email=${customerEmail}, ` +
+          `promoter_id=${newPromoter.id || 'unknown'}, ` +
+          `ref_id=${(newPromoter as Record<string, unknown>).default_ref_id || 'pending'}` +
+          (parentPromoterId ? `, parent=${parentPromoterId}` : ', tier=1 (standalone)')
+        );
+      } else if (createRes.status === 422) {
+        // Idempotency guard: promoter already exists for this email.
+        // This handles Stripe webhook retries gracefully.
+        console.log(`FIRSTPROMOTER: Promoter already exists for ${customerEmail} (idempotent, safe to ignore)`);
+      } else {
+        const errorBody = await createRes.text();
+        console.error(
+          `FIRSTPROMOTER CREATE FAILED: status=${createRes.status}, ` +
+          `email=${customerEmail}, response=${errorBody}`
+        );
+      }
+    }
+  } catch (fpErr: unknown) {
+    const message = fpErr instanceof Error ? fpErr.message : 'Unknown error';
+    console.error(`FIRSTPROMOTER ERROR: email=${customerEmail}, error=${message}`);
+    // Fail-open: FirstPromoter failure never blocks customer onboarding.
+    // The affiliate record can be created manually if needed.
   }
 }
 
