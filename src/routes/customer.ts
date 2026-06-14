@@ -24,7 +24,7 @@ const COUNTER_START = 51;
 const GOLDEN_SNAPSHOT_ID = 232693913;
 
 // Customer Droplet specification
-const DROPLET_SIZE = 's-4vcpu-8gb-160gb-intel';
+const DROPLET_SIZE = 's-4vcpu-8gb-intel';
 
 // Snapshot region lock (snapshot only exists in SGP1)
 const SNAPSHOT_REGION = 'sgp1';
