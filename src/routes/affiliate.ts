@@ -4,9 +4,14 @@ import { Env } from '../types';
 const affiliate = new Hono<{ Bindings: Env }>();
 
 // Helper: fetch promoter by email from FirstPromoter
+// CRITICAL: Uses /promoters/show?promoter_email= (NOT /promoters/list?email=)
+// The /promoters/list endpoint does NOT support email filtering -- it only
+// supports campaign_id. Passing email= is silently ignored, returning ALL
+// promoters sorted by creation date. This caused a bug where the most recently
+// created promoter was displayed instead of the authenticated user's record.
 async function getPromoterByEmail(email: string, apiKey: string, accountId: string) {
   const res = await fetch(
-    `https://firstpromoter.com/api/v1/promoters/list?email=${encodeURIComponent(email)}`,
+    `https://firstpromoter.com/api/v1/promoters/show?promoter_email=${encodeURIComponent(email)}`,
     {
       headers: {
         'x-api-key': apiKey,
@@ -16,17 +21,18 @@ async function getPromoterByEmail(email: string, apiKey: string, accountId: stri
     }
   );
 
+  // 404 means no promoter exists for this email -- valid response, not an error
+  if (res.status === 404) {
+    return null;
+  }
+
   if (!res.ok) {
     throw new Error(`FirstPromoter API returned ${res.status}`);
   }
 
-  const promoters = await res.json() as Array<Record<string, unknown>>;
-
-  if (!promoters || promoters.length === 0) {
-    return null;
-  }
-
-  return promoters[0];
+  // /promoters/show returns a single promoter object, not an array
+  const promoter = await res.json() as Record<string, unknown>;
+  return promoter;
 }
 
 /**
