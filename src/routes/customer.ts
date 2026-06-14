@@ -281,6 +281,7 @@ mkdir -p /root/TheStructure-Quantum-2/infrastructure/cloudflared
 cat > /root/TheStructure-Quantum-2/infrastructure/cloudflared/credentials.json << 'CRED_EOF'
 {"AccountTag":"${accountId}","TunnelID":"${tunnelId}","TunnelSecret":"${tunnelSecret}"}
 CRED_EOF
+chown 65532:65532 /root/TheStructure-Quantum-2/infrastructure/cloudflared/credentials.json
 chmod 600 /root/TheStructure-Quantum-2/infrastructure/cloudflared/credentials.json
 echo "[$(date)] Tunnel credentials written"
 
@@ -291,9 +292,11 @@ credentials-file: /etc/cloudflared/credentials.json
 
 ingress:
   - hostname: ${fqdn}
-    service: http://localhost:80
+    service: http://nginx:80
   - hostname: "*.${fqdn}"
-    service: http://localhost:8080
+    service: http://nginx-tools:80
+  - hostname: ssh.${fqdn}
+    service: ssh://host.docker.internal:22
   - service: http_status:404
 CONFIG_EOF
 echo "[$(date)] Tunnel config written"
