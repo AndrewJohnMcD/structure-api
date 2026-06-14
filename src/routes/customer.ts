@@ -922,10 +922,10 @@ customer.post('/select-region', async (c) => {
     await stripe.customers.update(cust.id, { metadata: finalMeta });
     console.log('Step 8/9: Stripe metadata updated');
 
-    // --- Step 9: Send welcome email (gated behind IP resolution) ---
-    if (dropletIp) {
     const instanceUrl = `https://${fqdn}`;
 
+    // --- Step 9: Send welcome email (gated behind IP resolution) ---
+    if (dropletIp) {
     try {
       await fetch('https://api.resend.com/emails', {
         method: 'POST',
