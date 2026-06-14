@@ -334,7 +334,7 @@ async function resolveDropletIp(
   doToken: string,
   dropletId: string
 ): Promise<string | null> {
-  for (let attempt = 1; attempt <= 5; attempt++) {
+  for (let attempt = 1; attempt <= 10; attempt++) {
     try {
       const res = await fetch(`${DO_API}/droplets/${dropletId}`, {
         headers: { Authorization: `Bearer ${doToken}` },
@@ -342,7 +342,7 @@ async function resolveDropletIp(
 
       if (!res.ok) {
         console.warn(`DO IP lookup attempt ${attempt} failed: ${res.status}`);
-        if (attempt < 5) await new Promise((r) => setTimeout(r, 3000));
+        if (attempt < 10) await new Promise((r) => setTimeout(r, 5000));
         continue;
       }
 
@@ -363,20 +363,66 @@ async function resolveDropletIp(
         return publicNet.ip_address;
       }
 
-      console.log(`DO IP not yet assigned, attempt ${attempt}/5, waiting 3s...`);
+      console.log(`DO IP not yet assigned, attempt ${attempt}/10, waiting 5s...`);
     } catch (err) {
       console.warn(`DO IP lookup attempt ${attempt} error:`, err);
     }
 
-    if (attempt < 5) {
-      await new Promise((r) => setTimeout(r, 3000));
+    if (attempt < 10) {
+      await new Promise((r) => setTimeout(r, 5000));
     }
   }
 
-  console.warn('DO IP resolution exhausted all 5 attempts');
+  console.warn('DO IP resolution exhausted all 10 attempts');
   return null;
 }
 
+
+// ============================================================
+// Instance Readiness Probe
+// ============================================================
+
+/**
+ * Probe whether a customer's subdomain is responding.
+ * Uses cache-busting query string and no-cache headers to bypass
+ * Cloudflare edge caching and hit the origin directly.
+ * Returns true if the subdomain responds with any HTTP status (even 401/403),
+ * which confirms the tunnel + containers are up.
+ */
+async function probeInstanceReady(subdomain: string): Promise<boolean> {
+  if (!subdomain) return false;
+
+  try {
+    const cacheBuster = `_t=${Date.now()}`;
+    const url = `https://${subdomain}?${cacheBuster}`;
+    console.log(`Readiness probe: ${url}`);
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+
+    const res = await fetch(url, {
+      method: 'HEAD',
+      headers: {
+        'Cache-Control': 'no-cache, no-store',
+        Pragma: 'no-cache',
+      },
+      signal: controller.signal,
+      redirect: 'manual',
+    });
+
+    clearTimeout(timeout);
+
+    // Any HTTP response means the tunnel is connected and containers are serving.
+    // 502/503 from Cloudflare means tunnel exists but origin isn't ready yet.
+    const ready = res.status < 500;
+    console.log(`Readiness probe result: status=${res.status}, ready=${ready}`);
+    return ready;
+  } catch (err) {
+    // Network error, timeout, or Cloudflare 521/522/523 = not ready
+    console.log(`Readiness probe failed (instance not ready yet):`, err);
+    return false;
+  }
+}
 // ============================================================
 // Clerk Cache-Through Helpers
 // ============================================================
@@ -657,6 +703,9 @@ customer.get('/status', async (c) => {
     subdomain = healed.subdomain;
   }
 
+  // Probe instance readiness if subdomain exists
+  const instanceReady = subdomain ? await probeInstanceReady(subdomain) : false;
+
   return c.json({
     subscriptionStatus: sub ? sub.status : 'none',
     provisioningStatus,
@@ -676,6 +725,7 @@ customer.get('/status', async (c) => {
     dropletIp: dropletIp !== 'pending' ? dropletIp : null,
     dropletRegion: meta.dropletRegion || null,
     subdomain: subdomain || null,
+    instanceReady,
   });
 });
 
@@ -872,7 +922,8 @@ customer.post('/select-region', async (c) => {
     await stripe.customers.update(cust.id, { metadata: finalMeta });
     console.log('Step 8/9: Stripe metadata updated');
 
-    // --- Step 9: Send welcome email ---
+    // --- Step 9: Send welcome email (gated behind IP resolution) ---
+    if (dropletIp) {
     const instanceUrl = `https://${fqdn}`;
 
     try {
@@ -910,6 +961,9 @@ customer.post('/select-region', async (c) => {
       console.log(`Step 9/9: Welcome email sent to ${email}`);
     } catch (emailErr) {
       console.warn('Welcome email failed (non-blocking):', emailErr);
+    }
+    } else {
+      console.warn('Step 9/9: DEFERRED - IP not yet resolved, welcome email skipped');
     }
 
     console.log(`=== PROVISIONING COMPLETE: ${email} -> ${fqdn} ===`);
