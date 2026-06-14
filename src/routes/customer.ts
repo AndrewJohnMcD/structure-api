@@ -277,17 +277,17 @@ exec > /var/log/structure-init.log 2>&1
 echo "[$(date)] Structure cloud-init starting"
 
 # --- 1. Write Cloudflare Tunnel credentials ---
-mkdir -p /root/.cloudflared
-cat > /root/.cloudflared/credentials.json << 'CRED_EOF'
+mkdir -p /root/TheStructure-Quantum-2/infrastructure/cloudflared
+cat > /root/TheStructure-Quantum-2/infrastructure/cloudflared/credentials.json << 'CRED_EOF'
 {"AccountTag":"${accountId}","TunnelID":"${tunnelId}","TunnelSecret":"${tunnelSecret}"}
 CRED_EOF
-chmod 600 /root/.cloudflared/credentials.json
+chmod 600 /root/TheStructure-Quantum-2/infrastructure/cloudflared/credentials.json
 echo "[$(date)] Tunnel credentials written"
 
 # --- 2. Write Cloudflare Tunnel config ---
-cat > /root/.cloudflared/config.yml << 'CONFIG_EOF'
+cat > /root/TheStructure-Quantum-2/infrastructure/cloudflared/config.yml << 'CONFIG_EOF'
 tunnel: ${tunnelId}
-credentials-file: /root/.cloudflared/credentials.json
+credentials-file: /etc/cloudflared/credentials.json
 
 ingress:
   - hostname: ${fqdn}
