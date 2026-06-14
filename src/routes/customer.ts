@@ -299,7 +299,7 @@ CONFIG_EOF
 echo "[$(date)] Tunnel config written"
 
 # --- 3. Update STRUCTURE_DOMAIN in .env ---
-cd /root/TheStructure-Quantum
+cd /root/TheStructure-Quantum-2
 if [ -f .env ]; then
   sed -i 's|^STRUCTURE_DOMAIN=.*|STRUCTURE_DOMAIN=${fqdn}|' .env
   echo "[$(date)] STRUCTURE_DOMAIN updated to ${fqdn}"
@@ -308,7 +308,7 @@ else
 fi
 
 # --- 4. Start the full stack ---
-cd /root/TheStructure-Quantum
+cd /root/TheStructure-Quantum-2
 docker compose up -d
 echo "[$(date)] Docker Compose started"
 
