@@ -51,6 +51,9 @@ checkout.post('/', async (c) => {
     subscription_data: {
       metadata,
     },
+    // FirstPromoter revenue attribution: bridges Stripe payment to promoter
+    // Immune to ad-blockers since this is server-to-server
+    ...(referralCode ? { client_reference_id: referralCode } : {}),
   };
 
   // Apply partner coupon if referral code is provided
