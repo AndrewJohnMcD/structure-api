@@ -937,13 +937,13 @@ customer.post('/select-region', async (c) => {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          from: 'The Structure <noreply@mail.optimisingperformance.com.au>',
+          from: 'The Structure Team <noreply@mail.optimisingperformance.com.au>',
           to: [email],
           subject: 'Your Structure Instance is Ready',
           html: `
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
               <h1 style="color: #1e40af;">Welcome to The Structure</h1>
-              <p>Your dedicated quantum orchestration instance has been provisioned and is starting up.</p>
+              <p>Your dedicated instance has been created and is starting up for the first time.</p>
               <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
                 <tr>
                   <td style="padding: 8px; border: 1px solid #e5e7eb; font-weight: bold;">Region</td>
@@ -954,7 +954,7 @@ customer.post('/select-region', async (c) => {
                   <td style="padding: 8px; border: 1px solid #e5e7eb;"><a href="${instanceUrl}">${instanceUrl}</a></td>
                 </tr>
               </table>
-              <p><strong>Please allow 3-5 minutes</strong> for your instance to fully initialize on first boot.</p>
+              <p><strong>Please allow 10-15 minutes</strong> for your instance to finish its first-time setup. This only happens once -- every login after this is instant.</p>
               <p>You can access your instance from the <a href="https://portal.optimisingperformance.com.au">Customer Portal</a> or directly via the URL above.</p>
               <p style="color: #6b7280; font-size: 12px;">The Structure by Optimising Performance Solutions</p>
             </div>
