@@ -14,7 +14,7 @@ const webhooks = new Hono<{ Bindings: Env }>();
  * Stripe calls it server-to-server with a signed payload.
  *
  * Handled events:
- *   - checkout.session.completed  -> record customer, write metadata, send Clerk invitation, create affiliate
+ *   - checkout.session.completed  -> record customer, write metadata, attribute lead, send Clerk invitation, create affiliate
  *   - invoice.paid                -> log successful payment
  *   - invoice.payment_failed      -> log failed payment for alerting
  *   - customer.subscription.updated -> log plan changes
@@ -111,8 +111,9 @@ webhooks.post('/', async (c) => {
  * Actions:
  *   1. Extract customer ID, subscription ID, and referral code
  *   2. Write metadata back to the Stripe Customer object
- *   3. Send a Clerk invitation email so the customer can create their Portal account
- *   4. Create a FirstPromoter affiliate record for viral referral distribution
+ *   3. Register lead in FirstPromoter for revenue attribution (referral sales only)
+ *   4. Send a Clerk invitation email so the customer can create their Portal account
+ *   5. Create a FirstPromoter affiliate record for viral referral distribution
  */
 async function handleCheckoutCompleted(
   stripe: Stripe,
@@ -155,7 +156,52 @@ async function handleCheckoutCompleted(
     // Don\'t throw -- we still want to send the invitation
   }
 
-  // --- Step 2: Send Clerk invitation email ---
+  // --- Step 2: Register lead in FirstPromoter for revenue attribution ---
+  // This explicitly tells FirstPromoter "this customer was referred by this promoter"
+  // so that commissions are calculated and displayed on the Partners dashboard.
+  // Only fires for referred signups (organic signups skip this step).
+  // Fail-open: FirstPromoter failures never block onboarding.
+  if (referralCode && env.FIRSTPROMOTER_API_KEY) {
+    try {
+      const leadParams = new URLSearchParams();
+      leadParams.append('email', customerEmail);
+      leadParams.append('uid', customerId);
+      leadParams.append('ref_id', referralCode);
+      leadParams.append('event_id', session.id);  // Idempotency key: prevents double-counting on Stripe retries
+
+      const leadRes = await fetch('https://firstpromoter.com/api/v1/leads/create', {
+        method: 'POST',
+        headers: {
+          'x-api-key': env.FIRSTPROMOTER_API_KEY,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: leadParams.toString(),
+      });
+
+      if (leadRes.ok) {
+        const leadData = await leadRes.json() as Record<string, unknown>;
+        console.log(
+          `FIRSTPROMOTER LEAD REGISTERED: email=${customerEmail}, ` +
+          `ref_id=${referralCode}, lead_id=${leadData.id || 'unknown'}`
+        );
+      } else if (leadRes.status === 422) {
+        // Idempotency guard: lead already exists for this event.
+        console.log(`FIRSTPROMOTER: Lead already registered for ${customerEmail} (idempotent, safe to ignore)`);
+      } else {
+        const errorBody = await leadRes.text();
+        console.error(
+          `FIRSTPROMOTER LEAD FAILED: status=${leadRes.status}, ` +
+          `email=${customerEmail}, response=${errorBody}`
+        );
+      }
+    } catch (leadErr: unknown) {
+      const message = leadErr instanceof Error ? leadErr.message : 'Unknown error';
+      console.error(`FIRSTPROMOTER LEAD ERROR: email=${customerEmail}, error=${message}`);
+      // Fail-open: lead attribution failure never blocks customer onboarding.
+    }
+  }
+
+  // --- Step 3: Send Clerk invitation email ---
   // This creates an invitation in the Portal Clerk instance.
   // The customer receives an email with a link to create their account.
   // Once they sign in, the Portal detects their Stripe subscription
@@ -206,7 +252,7 @@ async function handleCheckoutCompleted(
     // The invitation failure is logged for manual follow-up.
   }
 
-  // --- Step 3: Create FirstPromoter affiliate record ---
+  // --- Step 4: Create FirstPromoter affiliate record ---
   // Every paying customer automatically becomes an affiliate with their own
   // referral code, enabling viral distribution from day one.
   // This block is fail-open: FirstPromoter failures never block onboarding.
