@@ -75,9 +75,9 @@ affiliate.get('/stats', async (c) => {
     if (promotions.length > 0) {
       console.log('Campaign[0] keys:', Object.keys(campaign));
       console.log('Campaign[0] stats:', {
-        referrals_count: campaign.referrals_count,
+        leads_count: campaign.leads_count,
         customers_count: campaign.customers_count,
-        current_referral_revenue: campaign.current_referral_revenue,
+        sales_total: campaign.sales_total,
         visitors_count: campaign.visitors_count,
       });
     }
@@ -91,13 +91,13 @@ affiliate.get('/stats', async (c) => {
       referral_link: (p.default_ref_link as string) || (refId ? `https://quantum.optimisingperformance.com.au?ref=${refId}` : ''),
       stats: {
         // Referral counts come from the campaign object, not promoter top level
-        referrals_count: (campaign.referrals_count as number) || (campaign.customers_count as number) || 0,
-        active_referrals: (campaign.customers_count as number) || 0,
+        referrals_count: (campaign.leads_count as number) ?? (campaign.customers_count as number) ?? 0,
+        active_referrals: (campaign.customers_count as number) ?? 0,
         // Balance fields exist at the promoter top level
-        current_balance: (p.current_balance as number) || 0,
-        paid_balance: (p.paid_balance as number) || 0,
+        current_balance: (p.current_balance as number) ?? 0,
+        paid_balance: (p.paid_balance as number) ?? 0,
         // Total revenue: try campaign-level first, fall back to earnings_balance
-        total_revenue: (campaign.current_referral_revenue as number) || (p.earnings_balance as number) || 0,
+        total_revenue: (campaign.sales_total as number) ?? (p.earnings_balance as number) ?? 0,
       },
       tier: {
         direct_commission: '40%',
@@ -152,7 +152,7 @@ affiliate.get('/referrals', async (c) => {
       id: lead.id,
       customer_id: lead.uid || `CUST-${lead.id}`,
       state: lead.state || 'active',
-      plan: lead.plan_name || 'Standard ($540/mo)',
+      plan: 'The Structure -- Standard',
       created_at: lead.created_at,
       commission_amount: lead.commission_amount || 0,
     }));
@@ -209,15 +209,15 @@ affiliate.get('/earnings', async (c) => {
         amount: r.amount || 0,
         status: r.status || 'pending',
         type: r.kind || 'commission',
-        customer: r.lead_email || r.lead_uid || 'Unknown',
+        customer: r.lead_uid ? `CUST-${r.lead_uid}` : `CUST-${r.id}`,
         created_at: r.created_at,
       }));
     }
 
     return c.json({
       promoter_id: promoterId,
-      current_balance: p.current_balance || 0,
-      paid_balance: p.paid_balance || 0,
+      current_balance: (p.current_balance as number) ?? 0,
+      paid_balance: (p.paid_balance as number) ?? 0,
       transactions,
     });
   } catch (err) {
