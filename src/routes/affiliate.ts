@@ -60,14 +60,27 @@ affiliate.get('/stats', async (c) => {
 
     const p = promoter as Record<string, unknown>;
 
-    // Diagnostic: log raw promoter fields for debugging field name mismatches
+    // Diagnostic: log raw promoter structure for field name verification
     console.log('Raw promoter object keys:', Object.keys(p));
-    console.log('Promoter identity fields:', {
-      id: p.id,
-      default_ref_id: p.default_ref_id,
-      status: p.status,
-      default_ref_link: p.default_ref_link,
-    });
+    console.log('Promoter identity:', { id: p.id, default_ref_id: p.default_ref_id, status: p.status });
+
+    // Extract campaign stats from the promotions array
+    // FirstPromoter nests referral/customer counts inside per-campaign objects,
+    // NOT at the promoter top level. The top level only has balance fields.
+    const promotions = Array.isArray(p.promotions) ? p.promotions as Array<Record<string, unknown>> : [];
+    const campaign = promotions.length > 0 ? promotions[0] : {} as Record<string, unknown>;
+
+    // Diagnostic: log campaign-level fields to verify exact field names
+    console.log('Promotions array length:', promotions.length);
+    if (promotions.length > 0) {
+      console.log('Campaign[0] keys:', Object.keys(campaign));
+      console.log('Campaign[0] stats:', {
+        referrals_count: campaign.referrals_count,
+        customers_count: campaign.customers_count,
+        current_referral_revenue: campaign.current_referral_revenue,
+        visitors_count: campaign.visitors_count,
+      });
+    }
 
     const refId = p.default_ref_id as string | undefined;
 
@@ -77,11 +90,14 @@ affiliate.get('/stats', async (c) => {
       state: (p.status as string) || 'unknown',
       referral_link: (p.default_ref_link as string) || (refId ? `https://quantum.optimisingperformance.com.au?ref=${refId}` : ''),
       stats: {
-        referrals_count: p.customers_count || 0,
-        active_referrals: p.active_customers_count || 0,
-        current_balance: p.current_balance || 0,
-        paid_balance: p.paid_balance || 0,
-        total_revenue: p.total_revenue || 0,
+        // Referral counts come from the campaign object, not promoter top level
+        referrals_count: (campaign.referrals_count as number) || (campaign.customers_count as number) || 0,
+        active_referrals: (campaign.customers_count as number) || 0,
+        // Balance fields exist at the promoter top level
+        current_balance: (p.current_balance as number) || 0,
+        paid_balance: (p.paid_balance as number) || 0,
+        // Total revenue: try campaign-level first, fall back to earnings_balance
+        total_revenue: (campaign.current_referral_revenue as number) || (p.earnings_balance as number) || 0,
       },
       tier: {
         direct_commission: '40%',
