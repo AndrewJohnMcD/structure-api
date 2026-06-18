@@ -60,27 +60,12 @@ affiliate.get('/stats', async (c) => {
 
     const p = promoter as Record<string, unknown>;
 
-    // Diagnostic: log raw promoter structure for field name verification
-    console.log('Raw promoter object keys:', Object.keys(p));
-    console.log('Promoter identity:', { id: p.id, default_ref_id: p.default_ref_id, status: p.status });
-
     // Extract campaign stats from the promotions array
     // FirstPromoter nests referral/customer counts inside per-campaign objects,
     // NOT at the promoter top level. The top level only has balance fields.
     const promotions = Array.isArray(p.promotions) ? p.promotions as Array<Record<string, unknown>> : [];
     const campaign = promotions.length > 0 ? promotions[0] : {} as Record<string, unknown>;
 
-    // Diagnostic: log campaign-level fields to verify exact field names
-    console.log('Promotions array length:', promotions.length);
-    if (promotions.length > 0) {
-      console.log('Campaign[0] keys:', Object.keys(campaign));
-      console.log('Campaign[0] stats:', {
-        referrals_count: campaign.referrals_count,
-        customers_count: campaign.customers_count,
-        current_referral_revenue: campaign.current_referral_revenue,
-        visitors_count: campaign.visitors_count,
-      });
-    }
 
     const refId = p.default_ref_id as string | undefined;
 
@@ -91,13 +76,13 @@ affiliate.get('/stats', async (c) => {
       referral_link: (p.default_ref_link as string) || (refId ? `https://quantum.optimisingperformance.com.au?ref=${refId}` : ''),
       stats: {
         // Referral counts come from the campaign object, not promoter top level
-        referrals_count: (campaign.referrals_count as number) || (campaign.customers_count as number) || 0,
-        active_referrals: (campaign.customers_count as number) || 0,
+        referrals_count: (campaign.leads_count as number) ?? (campaign.customers_count as number) ?? 0,
+        active_referrals: (campaign.customers_count as number) ?? 0,
         // Balance fields exist at the promoter top level
-        current_balance: (p.current_balance as number) || 0,
-        paid_balance: (p.paid_balance as number) || 0,
+        current_balance: (p.current_balance as number) ?? 0,
+        paid_balance: (p.paid_balance as number) ?? 0,
         // Total revenue: try campaign-level first, fall back to earnings_balance
-        total_revenue: (campaign.current_referral_revenue as number) || (p.earnings_balance as number) || 0,
+        total_revenue: (campaign.sales_total as number) ?? (p.earnings_balance as number) ?? 0,
       },
       tier: {
         direct_commission: '40%',
@@ -150,11 +135,12 @@ affiliate.get('/referrals', async (c) => {
 
     const referrals = leads.map((lead) => ({
       id: lead.id,
-      customer_id: lead.uid || `CUST-${lead.id}`,
-      state: lead.state || 'active',
-      plan: lead.plan_name || 'Standard ($540/mo)',
+      // Privacy: always use opaque customer ID, never expose uid (may contain email)
+      customer_id: `CUST-${lead.id}`,
+      state: (lead.state as string) ?? 'active',
+      plan: 'The Structure -- Standard',
       created_at: lead.created_at,
-      commission_amount: lead.commission_amount || 0,
+      commission_amount: (lead.commission_amount as number) ?? 0,
     }));
 
     return c.json({
@@ -206,18 +192,19 @@ affiliate.get('/earnings', async (c) => {
       const rewards = await commissionsRes.json() as Array<Record<string, unknown>>;
       transactions = rewards.map((r) => ({
         id: r.id,
-        amount: r.amount || 0,
-        status: r.status || 'pending',
-        type: r.kind || 'commission',
-        customer: r.lead_email || r.lead_uid || 'Unknown',
+        amount: (r.amount as number) ?? 0,
+        status: (r.status as string) ?? 'pending',
+        type: (r.kind as string) ?? 'commission',
+        // Privacy: always use opaque transaction ID, never expose lead email
+        customer: `CUST-${r.id}`,
         created_at: r.created_at,
       }));
     }
 
     return c.json({
       promoter_id: promoterId,
-      current_balance: p.current_balance || 0,
-      paid_balance: p.paid_balance || 0,
+      current_balance: (p.current_balance as number) ?? 0,
+      paid_balance: (p.paid_balance as number) ?? 0,
       transactions,
     });
   } catch (err) {
