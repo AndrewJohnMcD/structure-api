@@ -213,4 +213,96 @@ affiliate.get('/earnings', async (c) => {
   }
 });
 
+
+/**
+ * PUT /api/affiliate/referral-code
+ * Allows a partner to customize their referral access code.
+ *
+ * Body: { email: string, new_code: string }
+ *
+ * Validation:
+ *   - Lowercase normalized (DAVE -> dave)
+ *   - 3-30 characters, alphanumeric + hyphens only
+ *   - No leading/trailing hyphens
+ *
+ * Uniqueness enforced by FirstPromoter as single source of truth.
+ * If the code is already taken, returns 409 Conflict.
+ */
+affiliate.put('/referral-code', async (c) => {
+  const body = await c.req.json<{ email?: string; new_code?: string }>();
+  const email = body.email;
+  let newCode = body.new_code;
+
+  if (!email || !newCode) {
+    return c.json({ error: 'Both email and new_code are required' }, 400);
+  }
+
+  // Normalize to lowercase for clean URLs
+  newCode = newCode.toLowerCase().trim();
+
+  // Format validation: alphanumeric + hyphens, 3-30 chars, no leading/trailing hyphens
+  const codePattern = /^[a-z0-9][a-z0-9-]{1,28}[a-z0-9]$/;
+  if (!codePattern.test(newCode)) {
+    return c.json({
+      error: 'Invalid code format. Use 3-30 characters: lowercase letters, numbers, and hyphens. Cannot start or end with a hyphen.',
+    }, 400);
+  }
+
+  try {
+    // Look up the promoter by email
+    const promoter = await getPromoterByEmail(email, c.env.FIRSTPROMOTER_API_KEY, c.env.FIRSTPROMOTER_ACCOUNT_ID);
+
+    if (!promoter) {
+      return c.json({ error: 'No affiliate account found for this email' }, 404);
+    }
+
+    const p = promoter as Record<string, unknown>;
+    const promoterId = p.id;
+
+    // Update the promoter's default_ref_id via FirstPromoter API
+    // FirstPromoter enforces uniqueness -- if the code is taken, it rejects the update
+    const updateRes = await fetch(
+      'https://firstpromoter.com/api/v1/promoters/update',
+      {
+        method: 'PUT',
+        headers: {
+          'x-api-key': c.env.FIRSTPROMOTER_API_KEY,
+          'x-account-id': c.env.FIRSTPROMOTER_ACCOUNT_ID,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({
+          id: String(promoterId),
+          default_ref_id: newCode,
+        }),
+      }
+    );
+
+    // Handle duplicate code rejection from FirstPromoter
+    if (updateRes.status === 422 || updateRes.status === 409) {
+      return c.json({
+        error: 'This access code is already taken. Please choose a different one.',
+      }, 409);
+    }
+
+    if (!updateRes.ok) {
+      const errBody = await updateRes.text();
+      console.error('FirstPromoter update failed:', updateRes.status, errBody);
+      throw new Error(`FirstPromoter update returned ${updateRes.status}`);
+    }
+
+    const updated = await updateRes.json() as Record<string, unknown>;
+    const updatedRefId = (updated.default_ref_id as string) || newCode;
+
+    console.log(`Access code updated for ${email}: ${updatedRefId}`);
+
+    return c.json({
+      ref_id: updatedRefId,
+      referral_link: `https://quantum.optimisingperformance.com.au?ref=${updatedRefId}`,
+      message: 'Access code updated successfully',
+    });
+  } catch (err) {
+    console.error('Referral code update error:', err);
+    return c.json({ error: 'Failed to update access code' }, 500);
+  }
+});
 export { affiliate };
