@@ -272,7 +272,7 @@ affiliate.put('/referral-code', async (c) => {
         },
         body: new URLSearchParams({
           id: String(promoterId),
-          default_ref_id: newCode,
+          new_ref_id: newCode,
         }),
       }
     );
@@ -296,9 +296,9 @@ affiliate.put('/referral-code', async (c) => {
     console.log(`Access code updated for ${email}: ${updatedRefId}`);
 
     return c.json({
-      ref_id: updatedRefId,
+      success: true,
+      new_code: updatedRefId,
       referral_link: `https://quantum.optimisingperformance.com.au?ref=${updatedRefId}`,
-      message: 'Access code updated successfully',
     });
   } catch (err) {
     console.error('Referral code update error:', err);
