@@ -81,6 +81,10 @@ webhooks.post('/', async (c) => {
         handleDisputeCreated(event);
         break;
 
+      case 'identity.verification_session.verified':
+        await handleIdentityVerified(event, c.env);
+        break;
+
       default:
         // Unhandled event types are acknowledged silently.
         // This prevents Stripe from retrying events we don\'t care about.
@@ -427,6 +431,65 @@ function handleDisputeCreated(event: Stripe.Event): void {
     `reason=${reason} ` +
     `-- URGENT: respond within deadline`
   );
+}
+
+/**
+ * identity.verification_session.verified
+ *
+ * Fired when a customer completes Stripe Identity verification successfully.
+ * Stamps the corresponding Clerk user's publicMetadata with identity_verified: true,
+ * permanently unlocking access to provisioning and affiliate routes.
+ *
+ * The verification session metadata contains clerkUserId and email, set when
+ * the session was created by the /create-verification-session endpoint.
+ */
+async function handleIdentityVerified(event: Stripe.Event, env: Env): Promise<void> {
+  const session = event.data.object as any;
+  const clerkUserId = session.metadata?.clerkUserId;
+  const email = session.metadata?.email;
+
+  if (!clerkUserId) {
+    console.error(
+      `Identity verified but no clerkUserId in metadata. ` +
+      `Session: ${session.id}, email: ${email || 'unknown'}`
+    );
+    return;
+  }
+
+  console.log(
+    `Identity verified: userId=${clerkUserId}, email=${email}, session=${session.id}`
+  );
+
+  // Stamp Clerk publicMetadata with identity_verified: true
+  try {
+    const res = await fetch(`https://api.clerk.com/v1/users/${clerkUserId}`, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${env.CLERK_SECRET_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        public_metadata: {
+          identity_verified: true,
+          identity_verified_at: new Date().toISOString(),
+        },
+      }),
+    });
+
+    if (!res.ok) {
+      const body = await res.text();
+      console.error(
+        `Failed to update Clerk publicMetadata: ${res.status} ${body}`
+      );
+      return;
+    }
+
+    console.log(
+      `Clerk publicMetadata updated: identity_verified=true for userId=${clerkUserId}`
+    );
+  } catch (err) {
+    console.error('Failed to update Clerk publicMetadata:', err);
+  }
 }
 
 export { webhooks };

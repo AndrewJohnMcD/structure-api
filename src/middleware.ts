@@ -191,3 +191,50 @@ export const customerAuth = async (c: Context<{ Bindings: Env }>, next: Next) =>
 
   await next();
 };
+
+
+// --- Identity Verification Guard ---
+// Runs AFTER customerAuth. Checks that the authenticated user has completed
+// Stripe Identity verification. Checks JWT public_metadata first (zero-cost),
+// falls back to Clerk Users API if the claim is absent.
+//
+// Usage: mount on routes that require verified identity.
+// Do NOT mount on create-verification-session (chicken-and-egg).
+export const verificationGuard = async (c: Context<{ Bindings: Env; Variables: { jwtPayload: Record<string, unknown> } }>, next: Next) => {
+  const payload = c.get('jwtPayload') as Record<string, unknown>;
+
+  // Fast path: check JWT public_metadata claim
+  const publicMeta = (payload.public_metadata ?? payload.publicMetadata) as Record<string, unknown> | undefined;
+  if (publicMeta?.identity_verified === true) {
+    await next();
+    return;
+  }
+
+  // Slow path: JWT may not include metadata yet (token issued before verification).
+  // Query Clerk Users API as authoritative source.
+  const clerkUserId = payload.sub as string;
+  if (clerkUserId && c.env.CLERK_SECRET_KEY) {
+    try {
+      const res = await fetch(`https://api.clerk.com/v1/users/${clerkUserId}`, {
+        headers: { Authorization: `Bearer ${c.env.CLERK_SECRET_KEY}` },
+      });
+
+      if (res.ok) {
+        const user = (await res.json()) as { public_metadata?: Record<string, unknown> };
+        if (user.public_metadata?.identity_verified === true) {
+          await next();
+          return;
+        }
+      }
+    } catch (err) {
+      console.error('Verification guard: Clerk API check failed:', err);
+      // Fail closed: if we can't verify, block access
+    }
+  }
+
+  return c.json({
+    error: 'Identity verification required',
+    message: 'Please complete identity verification before accessing this resource.',
+    action: 'create-verification-session',
+  }, 403);
+};

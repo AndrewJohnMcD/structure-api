@@ -1,7 +1,14 @@
 import { Hono } from 'hono';
 import { Env } from '../types';
+import { customerAuth, verificationGuard } from '../middleware';
 
-const affiliate = new Hono<{ Bindings: Env }>();
+const affiliate = new Hono<{ Bindings: Env; Variables: { jwtPayload: Record<string, unknown> } }>();
+
+// Authenticate all affiliate routes via Clerk JWT, then enforce identity verification.
+// Both guards run in sequence: customerAuth verifies the token and stores jwtPayload,
+// verificationGuard checks that the user has completed Stripe Identity verification.
+affiliate.use('*', customerAuth);
+affiliate.use('*', verificationGuard);
 
 // Helper: fetch promoter by email from FirstPromoter
 // CRITICAL: Uses /promoters/show?promoter_email= (NOT /promoters/list?email=)
