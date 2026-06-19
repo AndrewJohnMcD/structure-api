@@ -1,12 +1,17 @@
 import { Hono } from 'hono';
 import Stripe from 'stripe';
 import { Env } from '../types';
-import { customerAuth } from '../middleware';
+import { customerAuth, verificationGuard } from '../middleware';
 
 const customer = new Hono<{ Bindings: Env; Variables: { jwtPayload: Record<string, unknown> } }>();
 
 // Apply customer authentication to all routes
 customer.use('*', customerAuth);
+
+// Identity verification guard: blocks unverified users from provisioning routes.
+// Exempted: /status (frontend needs subscription info), /create-verification-session (chicken-and-egg).
+customer.use('/regions', verificationGuard);
+customer.use('/select-region', verificationGuard);
 
 // DigitalOcean API base URL
 const DO_API = 'https://api.digitalocean.com/v2';
@@ -651,10 +656,76 @@ async function selfHeal(
  * Returns subscription and provisioning status.
  * Includes self-healing for incomplete provisioning.
  */
+/**
+ * POST /api/customer/create-verification-session
+ *
+ * Creates a Stripe Identity VerificationSession for the authenticated user.
+ * Returns the client_secret needed by the frontend to launch the Stripe
+ * verification modal.
+ *
+ * This endpoint is EXEMPT from verificationGuard (chicken-and-egg: unverified
+ * users must be able to create verification sessions).
+ *
+ * Requires: customerAuth (JWT must be valid)
+ */
+customer.post('/create-verification-session', async (c) => {
+  const stripe = new Stripe(c.env.STRIPE_SECRET_KEY);
+  const payload = c.get('jwtPayload') as Record<string, unknown>;
+  const { clerkUserId, email } = await resolveIdentity(payload, c.env.CLERK_SECRET_KEY);
+
+  if (!email || !clerkUserId) {
+    return c.json({ error: 'Unable to resolve user identity' }, 400);
+  }
+
+  try {
+    const session = await stripe.identity.verificationSessions.create({
+      type: 'document',
+      metadata: {
+        clerkUserId,
+        email,
+      },
+      options: {
+        document: {
+          require_matching_selfie: true,
+        },
+      },
+    });
+
+    console.log(`Verification session created: ${session.id} for ${email}`);
+
+    return c.json({
+      sessionId: session.id,
+      clientSecret: session.client_secret,
+    });
+  } catch (err: any) {
+    console.error('Failed to create verification session:', err.message);
+    return c.json({ error: 'Failed to create verification session' }, 500);
+  }
+});
+
 customer.get('/status', async (c) => {
   const stripe = new Stripe(c.env.STRIPE_SECRET_KEY);
   const payload = c.get('jwtPayload') as Record<string, unknown>;
   const { clerkUserId, email } = await resolveIdentity(payload, c.env.CLERK_SECRET_KEY);
+
+// Resolve identity verification status
+let identityVerified = false;
+const publicMeta = (payload.public_metadata ?? payload.publicMetadata) as Record<string, unknown> | undefined;
+if (publicMeta?.identity_verified === true) {
+  identityVerified = true;
+} else if (clerkUserId && c.env.CLERK_SECRET_KEY) {
+  try {
+    const clerkRes = await fetch(`https://api.clerk.com/v1/users/${clerkUserId}`, {
+      headers: { Authorization: `Bearer ${c.env.CLERK_SECRET_KEY}` },
+    });
+    if (clerkRes.ok) {
+      const clerkUser = (await clerkRes.json()) as { public_metadata?: Record<string, unknown> };
+      identityVerified = clerkUser.public_metadata?.identity_verified === true;
+    }
+  } catch (err) {
+    console.error('Status: failed to check verification status:', err);
+  }
+}
 
   if (!email) {
     return c.json({
@@ -664,6 +735,7 @@ customer.get('/status', async (c) => {
       dropletIp: null,
       dropletRegion: null,
       subdomain: null,
+      identityVerified,
     });
   }
 
@@ -678,6 +750,7 @@ customer.get('/status', async (c) => {
       dropletIp: null,
       dropletRegion: null,
       subdomain: null,
+      identityVerified,
     });
   }
 
@@ -729,6 +802,7 @@ customer.get('/status', async (c) => {
     dropletRegion: meta.dropletRegion || null,
     subdomain: subdomain || null,
     instanceReady,
+    identityVerified,
   });
 });
 
