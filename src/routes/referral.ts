@@ -37,10 +37,10 @@ referral.post('/validate', async (c) => {
   const code = body.code.trim();
   // Short-circuit: hardcoded codes bypass FirstPromoter entirely
   if (code === BETA_CODE) {
-    return c.json({ valid: true, ref_id: code });
+    return c.json({ valid: true, ref_id: code, tier: 'beta' });
   }
   if (code.toLowerCase() === FIRSTWAVE_CODE) {
-    return c.json({ valid: true, ref_id: code });
+    return c.json({ valid: true, ref_id: code, tier: 'firstwave' });
   }
 
 
@@ -86,7 +86,7 @@ referral.post('/validate', async (c) => {
     );
 
     if (match) {
-      return c.json({ valid: true, ref_id: match.default_ref_id });
+      return c.json({ valid: true, ref_id: match.default_ref_id, tier: 'partner' });
     }
 
     // If promoters were found but none matched status requirements, log the mismatch
