@@ -4,11 +4,40 @@ import { Env } from '../types';
 
 const checkout = new Hono<{ Bindings: Env }>();
 
+// ============================================================
+// ACCESS CODE TIERS
+// ============================================================
+// Beta:       Hardcoded secret. 99% discount. No FirstPromoter.
+// First Wave: Hardcoded "inception". ~82% discount ($441 off).
+//             Attribution flows to Seed Promoter.
+// Partner:    Any other code. 40% discount.
+//             Attribution flows to referring promoter.
+// ============================================================
+
+const BETA_CODE = 'DONTEVENTRYITbba71uy6sCimxugXqYmGPmVp8mNktNz5x54c8kuBejv4UFi6r9d';
+const FIRSTWAVE_CODE = 'inception';
+
+/**
+ * Determines the coupon tier for a given access code.
+ * Returns the coupon env key and whether FirstPromoter attribution applies.
+ */
+function resolveAccessTier(code: string): {
+  couponKey: 'STRIPE_COUPON_BETA' | 'STRIPE_COUPON_FIRSTWAVE' | 'STRIPE_COUPON_ID';
+  attributeToPromoter: boolean;
+} {
+  if (code === BETA_CODE) {
+    return { couponKey: 'STRIPE_COUPON_BETA', attributeToPromoter: false };
+  }
+  if (code.toLowerCase() === FIRSTWAVE_CODE) {
+    return { couponKey: 'STRIPE_COUPON_FIRSTWAVE', attributeToPromoter: true };
+  }
+  return { couponKey: 'STRIPE_COUPON_ID', attributeToPromoter: true };
+}
+
 /**
  * POST /api/checkout
- * Creates a Stripe Checkout Session for the Standard Plan.
- * If a valid referral code is provided, applies the 40% partner coupon.
- * Region is optional -- customers select their region post-purchase.
+ * Creates a Stripe Checkout Session with tiered discount logic.
+ * Access codes route to Beta, First Wave, or Partner coupon tiers.
  */
 checkout.post('/', async (c) => {
   const stripe = new Stripe(c.env.STRIPE_SECRET_KEY);
@@ -25,15 +54,15 @@ checkout.post('/', async (c) => {
     return c.json({ error: 'Missing required fields: successUrl, cancelUrl' }, 400);
   }
 
-  // Accept both camelCase and snake_case for referral code
-  const referralCode = body.referralCode || body.referral_code;
+  // Accept both camelCase and snake_case for access code
+  const accessCode = body.referralCode || body.referral_code;
 
   const metadata: Record<string, string> = {};
   if (body.region) {
     metadata.region = body.region;
   }
-  if (referralCode) {
-    metadata.referralCode = referralCode;
+  if (accessCode) {
+    metadata.referralCode = accessCode;
   }
 
   const sessionParams: Stripe.Checkout.SessionCreateParams = {
@@ -51,18 +80,26 @@ checkout.post('/', async (c) => {
     subscription_data: {
       metadata,
     },
-    // FirstPromoter revenue attribution: bridges Stripe payment to promoter
-    // Immune to ad-blockers since this is server-to-server
-    ...(referralCode ? { client_reference_id: referralCode } : {}),
   };
 
-  // Apply partner coupon if referral code is provided
-  if (referralCode && referralCode.trim().length > 0) {
-    sessionParams.discounts = [
-      {
-        coupon: c.env.STRIPE_COUPON_ID,
-      },
-    ];
+  // Apply tiered discount and attribution logic
+  if (accessCode && accessCode.trim().length > 0) {
+    const tier = resolveAccessTier(accessCode.trim());
+    const couponId = c.env[tier.couponKey];
+
+    if (couponId) {
+      sessionParams.discounts = [
+        {
+          coupon: couponId,
+        },
+      ];
+    }
+
+    // FirstPromoter revenue attribution: bridges Stripe payment to promoter
+    // Beta tier is excluded -- no affiliate attribution for internal testing
+    if (tier.attributeToPromoter) {
+      sessionParams.client_reference_id = accessCode.trim();
+    }
   }
 
   try {
