@@ -13,6 +13,16 @@ const referral = new Hono<{ Bindings: Env }>();
 const VALID_PROMOTER_STATUSES = new Set(['active', 'accepted', 'approved']);
 
 /**
+* Hardcoded access codes that bypass FirstPromoter validation.
+* These are resolved to their respective discount tiers in checkout.ts.
+* Beta: 99% discount for internal testing.
+* First Wave: ~82% discount for influencer recruitment.
+*/
+const BETA_CODE = 'DONTEVENTRYITbba71uy6sCimxugXqYmGPmVp8mNktNz5x54c8kuBejv4UFi6r9d';
+const FIRSTWAVE_CODE = 'inception';
+
+
+/**
  * POST /api/referral/validate
  * Validates a referral code against FirstPromoter.
  * Returns { valid: boolean, ref_id: string } on success.
@@ -25,6 +35,14 @@ referral.post('/validate', async (c) => {
   }
 
   const code = body.code.trim();
+  // Short-circuit: hardcoded codes bypass FirstPromoter entirely
+  if (code === BETA_CODE) {
+    return c.json({ valid: true, ref_id: code });
+  }
+  if (code.toLowerCase() === FIRSTWAVE_CODE) {
+    return c.json({ valid: true, ref_id: code });
+  }
+
 
   try {
     // Look up promoter by ref_id in FirstPromoter
