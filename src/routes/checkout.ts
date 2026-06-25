@@ -10,12 +10,15 @@ const checkout = new Hono<{ Bindings: Env }>();
 // Beta:       Hardcoded secret. 99% discount. No FirstPromoter.
 // First Wave: Hardcoded "inception". ~82% discount ($441 off).
 //             Attribution flows to Seed Promoter.
+// Universal:  Hardcoded "universal". 40% discount ($324/mo).
+//             Company-direct. No affiliate attribution.
 // Partner:    Any other code. 40% discount.
 //             Attribution flows to referring promoter.
 // ============================================================
 
 const BETA_CODE = 'DONTEVENTRYITbba71uy6sCimxugXqYmGPmVp8mNktNz5x54c8kuBejv4UFi6r9d';
 const FIRSTWAVE_CODE = 'inception';
+const UNIVERSAL_CODE = 'universal';
 
 /**
  * Determines the coupon tier for a given access code.
@@ -30,6 +33,9 @@ function resolveAccessTier(code: string): {
   }
   if (code.toLowerCase() === FIRSTWAVE_CODE) {
     return { couponKey: 'STRIPE_COUPON_FIRSTWAVE', attributeToPromoter: true };
+  }
+  if (code.toLowerCase() === UNIVERSAL_CODE) {
+    return { couponKey: 'STRIPE_COUPON_ID', attributeToPromoter: false };
   }
   return { couponKey: 'STRIPE_COUPON_ID', attributeToPromoter: true };
 }

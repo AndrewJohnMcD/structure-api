@@ -17,9 +17,11 @@ const VALID_PROMOTER_STATUSES = new Set(['active', 'accepted', 'approved']);
 * These are resolved to their respective discount tiers in checkout.ts.
 * Beta: 99% discount for internal testing.
 * First Wave: ~82% discount for influencer recruitment.
+* Universal: 40% discount. Company-direct, no affiliate attribution.
 */
 const BETA_CODE = 'DONTEVENTRYITbba71uy6sCimxugXqYmGPmVp8mNktNz5x54c8kuBejv4UFi6r9d';
 const FIRSTWAVE_CODE = 'inception';
+const UNIVERSAL_CODE = 'universal';
 
 
 /**
@@ -41,6 +43,9 @@ referral.post('/validate', async (c) => {
   }
   if (code.toLowerCase() === FIRSTWAVE_CODE) {
     return c.json({ valid: true, ref_id: code, tier: 'firstwave' });
+  }
+  if (code.toLowerCase() === UNIVERSAL_CODE) {
+    return c.json({ valid: true, ref_id: code, tier: 'partner' });
   }
 
 
