@@ -319,6 +319,8 @@ fi
 
 # --- 4. Start the full stack ---
 cd /root/TheStructure-Quantum-2
+docker compose pull init-payloads
+echo "[$(date)] Pulled latest init-payloads image"
 docker compose up -d
 echo "[$(date)] Docker Compose started"
 
