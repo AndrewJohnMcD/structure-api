@@ -318,6 +318,8 @@ if [ -f .env ]; then
   echo "CF_API_TOKEN=${cfApiToken}" >> .env
   sed -i '/^CF_ZONE_ID=/d' .env
   echo "CF_ZONE_ID=${cfZoneId}" >> .env
+sed -i '/^CF_TUNNEL_UUID=/d' .env
+echo "CF_TUNNEL_UUID=${tunnelId}" >> .env
   echo "[$(date)] STRUCTURE_DOMAIN updated to ${fqdn}, CF credentials injected"
 else
   echo "[$(date)] WARNING: .env not found, skipping domain update"
