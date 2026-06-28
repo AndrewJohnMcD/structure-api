@@ -314,8 +314,10 @@ echo "[$(date)] Tunnel config written"
 cd /root/TheStructure-Quantum-2
 if [ -f .env ]; then
   sed -i 's|^STRUCTURE_DOMAIN=.*|STRUCTURE_DOMAIN=${fqdn}|' .env
-  sed -i 's|^CF_API_TOKEN=.*|CF_API_TOKEN=${cfApiToken}|' .env
-  sed -i 's|^CF_ZONE_ID=.*|CF_ZONE_ID=${cfZoneId}|' .env
+  sed -i '/^CF_API_TOKEN=/d' .env
+  echo "CF_API_TOKEN=${cfApiToken}" >> .env
+  sed -i '/^CF_ZONE_ID=/d' .env
+  echo "CF_ZONE_ID=${cfZoneId}" >> .env
   echo "[$(date)] STRUCTURE_DOMAIN updated to ${fqdn}, CF credentials injected"
 else
   echo "[$(date)] WARNING: .env not found, skipping domain update"
