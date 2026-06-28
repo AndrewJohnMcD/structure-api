@@ -269,8 +269,6 @@ function buildCloudInit(
   tunnelSecret: string,
   accountId: string,
   subdomain: string,
-  cfApiToken: string,
-  cfZoneId: string
 ): string {
   const fqdn = `${subdomain}.${BASE_DOMAIN}`;
 
@@ -314,13 +312,7 @@ echo "[$(date)] Tunnel config written"
 cd /root/TheStructure-Quantum-2
 if [ -f .env ]; then
   sed -i 's|^STRUCTURE_DOMAIN=.*|STRUCTURE_DOMAIN=${fqdn}|' .env
-  sed -i '/^CF_API_TOKEN=/d' .env
-  echo "CF_API_TOKEN=${cfApiToken}" >> .env
-  sed -i '/^CF_ZONE_ID=/d' .env
-  echo "CF_ZONE_ID=${cfZoneId}" >> .env
-sed -i '/^CF_TUNNEL_UUID=/d' .env
-echo "CF_TUNNEL_UUID=${tunnelId}" >> .env
-  echo "[$(date)] STRUCTURE_DOMAIN updated to ${fqdn}, CF credentials injected"
+  echo "[$(date)] STRUCTURE_DOMAIN updated to ${fqdn}"
 else
   echo "[$(date)] WARNING: .env not found, skipping domain update"
 fi
@@ -956,8 +948,6 @@ customer.post('/select-region', async (c) => {
       tunnelSecret,
       c.env.CF_ACCOUNT_ID,
       subdomain,
-      c.env.CF_API_TOKEN,
-      c.env.CF_ZONE_ID
     );
     console.log('Step 5/9: Cloud-init script built');
 

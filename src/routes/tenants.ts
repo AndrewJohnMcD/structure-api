@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { Env } from '../types';
 import { adminAuth } from '../middleware';
+import { deleteTunnel, deleteCustomerDnsRecords } from '../helpers/cloudflare';
 
 const tenants = new Hono<{ Bindings: Env }>();
 
