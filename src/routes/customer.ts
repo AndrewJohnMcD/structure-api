@@ -26,7 +26,7 @@ const BASE_DOMAIN = 'optimisingperformance.com.au';
 const COUNTER_START = 51;
 
 // Golden snapshot ID (pre-built Structure instance with Docker + images cached)
-const GOLDEN_SNAPSHOT_ID = 234860226;
+const GOLDEN_SNAPSHOT_ID = 234861338;
 
 // Customer Droplet specification
 const DROPLET_SIZE = 's-4vcpu-8gb-intel';
