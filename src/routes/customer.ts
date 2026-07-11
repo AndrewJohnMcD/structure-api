@@ -317,6 +317,12 @@ else
   echo "[$(date)] WARNING: .env not found, skipping domain update"
 fi
 
+# --- 3b. Patch LiteLLM healthcheck: curl -> wget ---
+# LiteLLM's minimal container image does not include curl.
+# Replace with wget which is available in the base image.
+sed -i 's|"CMD", "curl", "--fail", "http://localhost:4000/health"|"CMD-SHELL", "wget -qO- http://localhost:4000/health || exit 1"|' docker-compose.yml
+echo "[$(date)] LiteLLM healthcheck patched (curl -> wget)"
+
 # --- 4. Start the full stack ---
 cd /root/TheStructure-Quantum-2
 docker compose pull init-payloads backend
