@@ -110,6 +110,15 @@ checkout.post('/', async (c) => {
     if (tier.attributeToPromoter) {
       sessionParams.client_reference_id = accessCode.trim();
     }
+
+    // Preview tier: 100% discount means $0 total.
+    // Skip card collection so the user isn't asked for payment details.
+    // Stripe requires removing explicit payment_method_types when using
+    // payment_method_collection: 'if_required' at zero balance.
+    if (tier.couponKey === 'STRIPE_COUPON_PREVIEW') {
+      delete sessionParams.payment_method_types;
+      sessionParams.payment_method_collection = 'if_required';
+    }
   }
 
   try {
