@@ -19,13 +19,14 @@ const checkout = new Hono<{ Bindings: Env }>();
 const BETA_CODE = 'DONTEVENTRYITbba71uy6sCimxugXqYmGPmVp8mNktNz5x54c8kuBejv4UFi6r9d';
 const FIRSTWAVE_CODE = 'inception';
 const UNIVERSAL_CODE = 'universal';
+const PREVIEW_CODE = 'jan-free';
 
 /**
  * Determines the coupon tier for a given access code.
  * Returns the coupon env key and whether FirstPromoter attribution applies.
  */
 function resolveAccessTier(code: string): {
-  couponKey: 'STRIPE_COUPON_BETA' | 'STRIPE_COUPON_FIRSTWAVE' | 'STRIPE_COUPON_ID';
+  couponKey: 'STRIPE_COUPON_BETA' | 'STRIPE_COUPON_FIRSTWAVE' | 'STRIPE_COUPON_PREVIEW' | 'STRIPE_COUPON_ID';
   attributeToPromoter: boolean;
 } {
   if (code === BETA_CODE) {
@@ -37,6 +38,9 @@ function resolveAccessTier(code: string): {
   if (code.toLowerCase() === UNIVERSAL_CODE) {
     return { couponKey: 'STRIPE_COUPON_ID', attributeToPromoter: false };
   }
+if (code.toLowerCase() === PREVIEW_CODE) {
+return { couponKey: 'STRIPE_COUPON_PREVIEW', attributeToPromoter: false };
+}
   return { couponKey: 'STRIPE_COUPON_ID', attributeToPromoter: true };
 }
 

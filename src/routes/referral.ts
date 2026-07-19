@@ -22,6 +22,7 @@ const VALID_PROMOTER_STATUSES = new Set(['active', 'accepted', 'approved']);
 const BETA_CODE = 'DONTEVENTRYITbba71uy6sCimxugXqYmGPmVp8mNktNz5x54c8kuBejv4UFi6r9d';
 const FIRSTWAVE_CODE = 'inception';
 const UNIVERSAL_CODE = 'universal';
+const PREVIEW_CODE = 'jan-free';
 
 
 /**
@@ -47,6 +48,9 @@ referral.post('/validate', async (c) => {
   if (code.toLowerCase() === UNIVERSAL_CODE) {
     return c.json({ valid: true, ref_id: code, tier: 'partner' });
   }
+if (code.toLowerCase() === PREVIEW_CODE) {
+return c.json({ valid: true, ref_id: code, tier: 'preview' });
+}
 
 
   try {
