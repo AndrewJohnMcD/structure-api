@@ -4,6 +4,7 @@ export interface Env {
   STRIPE_COUPON_ID: string;
   STRIPE_COUPON_BETA: string;
   STRIPE_COUPON_FIRSTWAVE: string;
+STRIPE_COUPON_PREVIEW: string;
   STRIPE_WEBHOOK_SECRET: string;
   FIRSTPROMOTER_API_KEY: string;
   FIRSTPROMOTER_ACCOUNT_ID: string;
