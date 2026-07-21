@@ -391,6 +391,14 @@ aws iam put-user-policy \
 
 echo "[$(date)] Scoped IAM policy attached"
 
+# Purge any existing access keys (AWS hard-limits users to 2 keys).
+# Without this, re-provisioning fails with LimitExceededException.
+echo "[$(date)] Purging existing access keys for $IAM_USER"
+for OLD_KEY in $(aws iam list-access-keys --user-name "$IAM_USER" --query 'AccessKeyMetadata[].AccessKeyId' --output text 2>/dev/null); do
+  aws iam delete-access-key --user-name "$IAM_USER" --access-key-id "$OLD_KEY"
+  echo "[$(date)] Deleted stale key: $OLD_KEY"
+done
+
 # Generate access keys for the scoped user
 KEY_JSON=$(aws iam create-access-key --user-name "$IAM_USER" --output json)
 NEW_KEY_ID=$(echo "$KEY_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['AccessKey']['AccessKeyId'])")
