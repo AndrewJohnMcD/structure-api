@@ -323,6 +323,82 @@ fi
 sed -i 's#"CMD", "curl", "--fail", "http://localhost:4000/health"#"CMD-SHELL", "wget -qO- http://localhost:4000/health || exit 1"#' docker-compose.yml
 echo "[$(date)] LiteLLM healthcheck patched (curl -> wget)"
 
+# --- 3c. Create per-instance IAM user with scoped credentials ---
+# Replaces universal master AWS credentials with tenant-scoped ones.
+# Scoped user can ONLY access secrets under this instance's subdomain
+# prefix or the shared infrastructure prefix (thestructure/).
+# Enumeration (ListSecrets, BatchGetSecretValue) is explicitly denied.
+echo "[$(date)] Step 3c: Creating scoped IAM credentials"
+
+pip3 install -q awscli 2>/dev/null || pip install -q awscli 2>/dev/null
+
+# Source master credentials temporarily for IAM operations
+export $(grep -E '^AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY|DEFAULT_REGION)=' .env | xargs)
+
+IAM_USER="structure-${subdomain}"
+AWS_ACCT=$(aws sts get-caller-identity --query Account --output text)
+
+echo "[$(date)] Creating IAM user: $IAM_USER (account: $AWS_ACCT)"
+
+aws iam create-user --user-name "$IAM_USER" 2>/dev/null || echo "[$(date)] IAM user exists, continuing"
+
+# Write scoped policy to temp file to avoid nested JSON escaping
+cat > /tmp/iam-policy.json << POLICY_EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowScopedSecrets",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:PutSecretValue",
+        "secretsmanager:CreateSecret",
+        "secretsmanager:UpdateSecret",
+        "secretsmanager:DescribeSecret"
+      ],
+      "Resource": [
+        "arn:aws:secretsmanager:*:ACCT_PLACEHOLDER:secret:${subdomain}/*",
+        "arn:aws:secretsmanager:*:ACCT_PLACEHOLDER:secret:thestructure/*"
+      ]
+    },
+    {
+      "Sid": "DenyEnumeration",
+      "Effect": "Deny",
+      "Action": [
+        "secretsmanager:ListSecrets",
+        "secretsmanager:BatchGetSecretValue"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+POLICY_EOF
+
+sed -i "s|ACCT_PLACEHOLDER|$AWS_ACCT|g" /tmp/iam-policy.json
+
+aws iam put-user-policy \
+  --user-name "$IAM_USER" \
+  --policy-name "structure-secrets-scoped" \
+  --policy-document file:///tmp/iam-policy.json
+
+echo "[$(date)] Scoped IAM policy attached"
+
+# Generate access keys for the scoped user
+KEY_JSON=$(aws iam create-access-key --user-name "$IAM_USER" --output json)
+NEW_KEY_ID=$(echo "$KEY_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['AccessKey']['AccessKeyId'])")
+NEW_SECRET=$(echo "$KEY_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['AccessKey']['SecretAccessKey'])")
+
+# Overwrite master credentials with scoped credentials in .env
+sed -i "s|^AWS_ACCESS_KEY_ID=.*|AWS_ACCESS_KEY_ID=$NEW_KEY_ID|" .env
+sed -i "s|^AWS_SECRET_ACCESS_KEY=.*|AWS_SECRET_ACCESS_KEY=$NEW_SECRET|" .env
+
+# Cleanup: remove master creds from environment and temp policy file
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+rm -f /tmp/iam-policy.json
+
+echo "[$(date)] Scoped IAM credentials active (user: $IAM_USER)"
+
 # --- 4. Start the full stack ---
 cd /root/TheStructure-Quantum-2
 docker compose pull init-payloads backend
