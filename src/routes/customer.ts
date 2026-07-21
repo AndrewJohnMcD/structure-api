@@ -365,7 +365,7 @@ cat > /tmp/iam-policy.json << POLICY_EOF
         "secretsmanager:DescribeSecret"
       ],
       "Resource": [
-        "arn:aws:secretsmanager:*:ACCT_PLACEHOLDER:secret:${SECRET_PREFIX}/*",
+        "arn:aws:secretsmanager:*:ACCT_PLACEHOLDER:secret:\${SECRET_PREFIX}/*",
         "arn:aws:secretsmanager:*:ACCT_PLACEHOLDER:secret:thestructure/*"
       ]
     },
