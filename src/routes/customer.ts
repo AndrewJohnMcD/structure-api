@@ -330,7 +330,13 @@ echo "[$(date)] LiteLLM healthcheck patched (curl -> wget)"
 # Enumeration (ListSecrets, BatchGetSecretValue) is explicitly denied.
 echo "[$(date)] Step 3c: Creating scoped IAM credentials"
 
-pip3 install -q awscli 2>/dev/null || pip install -q awscli 2>/dev/null
+# Install AWS CLI v2 via official standalone installer (pip/apt awscli removed in Ubuntu 24.04)
+apt-get install -y -qq unzip curl > /dev/null 2>&1
+curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
+unzip -qo /tmp/awscliv2.zip -d /tmp
+/tmp/aws/install --update > /dev/null 2>&1
+rm -rf /tmp/awscliv2.zip /tmp/aws
+echo "[$(date)] AWS CLI installed: $(aws --version)"
 
 # Source master credentials temporarily for IAM operations
 export $(grep -E '^AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY|DEFAULT_REGION)=' .env | xargs)
