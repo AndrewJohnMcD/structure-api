@@ -342,6 +342,7 @@ echo "[$(date)] AWS CLI installed: $(aws --version)"
 export $(grep -E '^AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY|DEFAULT_REGION)=' .env | xargs)
 
 IAM_USER="structure-${subdomain}"
+SECRET_PREFIX=$(echo "${subdomain}" | sed "s/-[0-9]*$//")
 AWS_ACCT=$(aws sts get-caller-identity --query Account --output text)
 
 echo "[$(date)] Creating IAM user: $IAM_USER (account: $AWS_ACCT)"
@@ -364,7 +365,7 @@ cat > /tmp/iam-policy.json << POLICY_EOF
         "secretsmanager:DescribeSecret"
       ],
       "Resource": [
-        "arn:aws:secretsmanager:*:ACCT_PLACEHOLDER:secret:${subdomain}/*",
+        "arn:aws:secretsmanager:*:ACCT_PLACEHOLDER:secret:${SECRET_PREFIX}/*",
         "arn:aws:secretsmanager:*:ACCT_PLACEHOLDER:secret:thestructure/*"
       ]
     },
